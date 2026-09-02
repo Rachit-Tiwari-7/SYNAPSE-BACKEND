@@ -1,0 +1,30 @@
+# Environment & Secrets
+.env
+.env*.local
+.env.production
+.env.development
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+.pytest_cache/
+
+# ML Model Weights (Excluded)
+*.pt
+*.pth
+*.bin
+*.onnx
+*.weights
+Final.pt
+final.pt
+
+# OS & Logs
+.DS_Store
+Thumbs.db
+*.log

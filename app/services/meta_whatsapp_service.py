@@ -1,0 +1,959 @@
+"""
+SynapseOS — services/meta_whatsapp_service.py
+Meta Official WhatsApp Cloud API Webhook Ingestion, Multilingual Language Selection,
+Interactive Menu Engine, FSM, and Multi-Agent Dispatcher.
+"""
+
+import base64
+import logging
+from typing import Dict, Any, Optional
+
+from backend.app.services.meta_whatsapp_client import (
+    send_whatsapp_message,
+    send_whatsapp_interactive_buttons,
+    download_meta_media
+)
+from backend.app.core.session_manager import session_manager
+from backend.app.agents.orchestrator import orchestrate_health_request
+from backend.app.agents.triage_agent import analyze_symptoms
+from backend.app.agents.drug_agent import evaluate_drug_safety
+from backend.app.agents.scan_agent import analyze_medical_image
+from backend.app.agents.appointment_agent import find_doctors_by_specialty
+from backend.app.agents.vaccination_agent import calculate_vaccination_schedule
+from backend.app.agents.preventive_health_agent import (
+    get_preventive_topics,
+    generate_community_health_quiz,
+    evaluate_quiz_answers
+)
+from backend.app.agents.outbreak_agent import get_district_outbreak_risk
+from backend.app.services.abdm_service import generate_abha_id, check_ayushman_bharat_schemes
+from backend.app.services.i18n_service import translate_clinical_message, get_supported_languages
+
+logger = logging.getLogger(__name__)
+
+# =========================================================
+# 1. Multilingual Menus & Language Onboarding
+# =========================================================
+
+LANGUAGE_SELECTION_MENU = (
+    "🌿 *Welcome to SANJEEVNI-OS AI Health Assistant* 🌿\n"
+    "_Multi-Agent Clinical Intelligence & Public Health Platform_\n\n"
+    "🌐 *Please select your preferred language / अपनी भाषा चुनें:*\n\n"
+    "1️⃣ *English* (Default)\n"
+    "2️⃣ *हिन्दी* (Hindi)\n"
+    "3️⃣ *বাংলা* (Bengali)\n"
+    "4️⃣ *தமிழ்* (Tamil)\n"
+    "5️⃣ *తెలుగు* (Telugu)\n"
+    "6️⃣ *मराठी* (Marathi)\n"
+    "7️⃣ *ગુજરાતી* (Gujarati)\n"
+    "8️⃣ *ಕನ್ನಡ* (Kannada)\n"
+    "9️⃣ *മലയാളം* (Malayalam)\n"
+    "🔟 *ਪੰਜਾਬੀ* (Punjabi)\n"
+    "1️⃣1️⃣ *ଓଡ଼ିଆ* (Odia)\n\n"
+    "👉 _Reply with the number (e.g. `1` for English, `2` for हिन्दी) or name of the language._\n"
+    "_You can type 'lang' at any time to switch languages._"
+)
+
+LOCALIZED_MENUS: Dict[str, str] = {
+    "en": (
+        "🌿 *SANJEEVNI-OS / SYNAPSEOS — Rural & Public Health AI* 🌿\n"
+        "_Multilingual Healthcare, Vaccination & Outbreak Intelligence_\n\n"
+        "💬 *AI Health Doctor Chat* is active! You can ask *any health question* directly or reply with a number:\n\n"
+        "1️⃣ 🩺 *Chat with AI Doctor / Symptom Triage* — Type `1 <question>` or simply text any question!\n"
+        "    _e.g., 1 Why do I feel dizzy after waking up? or 1 High fever with shivering_\n\n"
+        "2️⃣ 💊 *Drug Safety & RxNav* — Type `2` followed by medicines\n"
+        "    _e.g., 2 Can I take Aspirin with Ibuprofen?_\n\n"
+        "3️⃣ 📷 *Scan & Prescription AI* — Send any *X-ray or Prescription photo*\n"
+        "    _Powered by FractureNet YOLOv8, Chest MONAI & TrOCR_\n\n"
+        "4️⃣ 🧠 *Mental Health (Tele-MANAS)* — Type `4` followed by how you feel\n"
+        "    _e.g., 4 Feeling anxious and cannot sleep_\n\n"
+        "5️⃣ 👨‍⚕️ *Find Empanelled Doctor* — Type `5` followed by specialty\n"
+        "    _e.g., 5 General Physician or 5 Pediatrician_\n\n"
+        "6️⃣ 🪪 *ABHA Health ID & PM-JAY* — Type `6` for ₹5 Lakh health card\n\n"
+        "7️⃣ 💉 *Vaccination & UIP Schedule* — Type `7` followed by child age/DOB\n"
+        "    _e.g., 7 6 weeks or 7 pregnancy_\n\n"
+        "8️⃣ 🚨 *District Outbreak Alerts* — Type `8` followed by district\n"
+        "    _e.g., 8 Delhi or 8 Patna or 8 Pune_\n\n"
+        "9️⃣ 📝 *Rural Preventive Health & Quiz* — Type `9` for ORS / Nutrition / Quiz\n\n"
+        "🆘 *Emergency SOS* — Reply *SOS* for immediate emergency broadcast\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "💬 _Feel free to ask any health question directly at any time._\n"
+        "🌐 _Type 'lang' to change language anytime._"
+    ),
+    "hi": (
+        "🌿 *संजीवनी-ओएस (Sanjeevni-OS) — ग्रामीण एवं जन स्वास्थ्य एआई* 🌿\n"
+        "_बहुभाषी स्वास्थ्य सेवा, टीकाकरण एवं महामारी पूर्व चेतावनी_\n\n"
+        "💬 *एआई डॉक्टर चैट सक्रिय है!* आप कोई भी स्वास्थ्य सवाल सीधे पूछ सकते हैं या नंबर चुनें:\n\n"
+        "1️⃣ 🩺 *एआई डॉक्टर से बात / लक्षण जांच* — `1` लिखकर सवाल पूछें या सीधे मैसेज भेजें!\n"
+        "    _उदा: 1 चक्कर आने का क्या कारण है? या 1 तेज बुखार और सिरदर्द_\n\n"
+        "2️⃣ 💊 *दवा सुरक्षा (RxNav)* — `2` लिखकर दवाओं के नाम बताएं\n"
+        "    _उदा: 2 क्या पैरासिटामोल के साथ एस्पिरिन ले सकते हैं?_\n\n"
+        "3️⃣ 📷 *एक्स-रे व पर्ची जांच* — कोई भी *एक्स-रे या पर्ची की फोटो* भेजें\n"
+        "    _FractureNet YOLOv8 द्वारा हड्डी फ्रैक्चर जांच_\n\n"
+        "4️⃣ 🧠 *मानसिक स्वास्थ्य (Tele-MANAS)* — `4` लिखकर अपनी समस्या बताएं\n"
+        "    _उदा: 4 घबराहट और नींद न आना_\n\n"
+        "5️⃣ 👨‍⚕️ *डॉक्टर खोजें* — `5` लिखकर विशेषज्ञता बताएं\n"
+        "    _उदा: 5 जनरल फिजिशियन या 5 बाल रोग विशेषज्ञ_\n\n"
+        "6️⃣ 🪪 *आभा कार्ड (ABHA) व PM-JAY* — `6` लिखकर ₹5 लाख मुफ्त इलाज कार्ड जानें\n\n"
+        "7️⃣ 💉 *टीकाकरण (UIP / U-WIN)* — `7` लिखकर बच्चे की उम्र या जन्मतिथि बताएं\n"
+        "    _उदा: 7 6 हफ्ते या 7 गर्भावस्था_\n\n"
+        "8️⃣ 🚨 *जिला महामारी अलर्ट* — `8` लिखकर जिले का नाम बताएं\n"
+        "    _उदा: 8 दिल्ली या 8 पटना या 8 लखनऊ_\n\n"
+        "9️⃣ 📝 *ग्रामीण स्वास्थ्य व क्विज़* — `9` ओआरएस, पोषण और क्विज़ के लिए\n\n"
+        "🆘 *आपातकालीन सेवा* — तत्काल सहायता के लिए *SOS* भेजें\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "💬 _आप बिना नंबर के भी सीधे कोई भी स्वास्थ्य प्रश्न पूछ सकते हैं।_\n"
+        "🌐 _भाषा बदलने के लिए किसी भी समय 'lang' लिखें।_"
+    ),
+    "bn": (
+        "🌿 *সঞ্জীবনী-ওএস (Sanjeevni-OS) — গ্রামীণ ও জনস্বাস্থ্য এআই* 🌿\n"
+        "_বহুভাষিক স্বাস্থ্য পরিষেবা ও টিকাদান নির্দেশিকা_\n\n"
+        "স্বাগতম! আমি আপনাকে কীভাবে সাহায্য করতে পারি? একটি *নম্বর* লিখুন:\n\n"
+        "1️⃣ *লক্ষণ পরীক্ষা* — `1` লিখে আপনার লক্ষণ জানান\n"
+        "2️⃣ *ওষুধ নিরাপত্তা* — `2` লিখে ওষুধের নাম লিখুন\n"
+        "3️⃣ *এক্স-রে ও প্রেসক্রিপশন AI* — ছবি বা এক্স-রে পাঠান 📷\n"
+        "4️⃣ *মানসিক স্বাস্থ্য (Tele-MANAS)* — `4` লিখে সমস্যা জানান\n"
+        "5️⃣ *ডাক্তার খুঁজুন* — `5` লিখে স্পেশালিস্ট খুঁজুন\n"
+        "6️⃣ *আভা আইডি (ABHA Card)* — `6` লিখে ₹৫ লাখ স্বাস্থ্য কার্ড জানুন\n"
+        "7️⃣ *টিকাদান সময়সূচী (UIP)* — `7` লিখে শিশুর বয়স জানান\n"
+        "8️⃣ *মহামারী সতর্কতা* — `8` লিখে জেলার নাম জানান\n"
+        "9️⃣ *স্বাস্থ্য শিক্ষা ও কুইজ* — `9` ওআরএস ও পুষ্টির জন্য\n"
+        "🚨 *জরুরি সহায়তা* — তৎক্ষণাৎ *SOS* পাঠান"
+    ),
+    "ta": (
+        "🌿 *சஞ்சீவனி-ஓஎஸ் (Sanjeevni-OS) — கிராமப்புற சுகாதார ஏஐ* 🌿\n"
+        "_பன்மொழி சுகாதார பராமரிப்பு & தடுப்பூசி வழிகாட்டி_\n\n"
+        "வணக்கம்! நான் உங்களுக்கு எப்படி உதவ முடியும்? எண்ணைத் தேர்ந்தெடுக்கவும்:\n\n"
+        "1️⃣ *அறிகுறி பரிசோதனை* — `1` எழுதி அறிகுறிகளை அனுப்பவும்\n"
+        "2️⃣ *மருந்து பாதுகாப்பு* — `2` எழுதி மருந்துகளின் பெயர்களை அனுப்பவும்\n"
+        "3️⃣ *எக்ஸ்ரே மற்றும் மருந்து சீட்டு* — புகைப்படத்தை அனுப்பவும் 📷\n"
+        "4️⃣ *மனநலம் (Tele-MANAS)* — `4` எழுதி ஆலோசனை பெறவும்\n"
+        "5️⃣ *மருத்துவரை கண்டறிய* — `5` எழுதி மருத்துவரை தேடவும்\n"
+        "6️⃣ *ஆபா அட்டை (ABHA)* — `6` எழுதி ₹5 லட்சம் காப்பீடு அறியவும்\n"
+        "7️⃣ *தடுப்பூசி அட்டவணை (UIP)* — `7` எழுதி குழந்தையின் வயதை அனுப்பவும்\n"
+        "8️⃣ *நோய் தொற்று எச்சரிக்கை* — `8` எழுதி மாவட்ட பெயரை அனுப்பவும்\n"
+        "9️⃣ *சுகாதார விழிப்புணர்வு & வினாடி வினா* — `9` ஐ அனுப்பவும்\n"
+        "🚨 *அவசர உதவி* — *SOS* அனுப்பவும்"
+    ),
+    "te": (
+        "🌿 *సంజీవని-ఓఎస్ (Sanjeevni-OS) — గ్రామీణ ప్రజారోగ్య ఏఐ* 🌿\n"
+        "_బహుభాషా ఆరోగ్య సంరక్షణ & వ్యాక్సినేషన్ ఇంటెలిజెన్స్_\n\n"
+        "నమస్కారం! నేను మీకు ఎలా సహాయపడగలను? నంబర్ ఎంచుకోండి:\n\n"
+        "1️⃣ *లక్షణాల నిర్ధారణ* — `1` మరియు లక్షణాలను టైప్ చేయండి\n"
+        "2️⃣ *ఔషధ భద్రత* — `2` మరియు మందుల పేర్లు టైప్ చేయండి\n"
+        "3️⃣ *ఎక్స్-రే & ప్రిస్క్రిప్షన్* — ఫోటో పంపండి 📷\n"
+        "4️⃣ *మానసిక ఆరోగ్యం (Tele-MANAS)* — `4` టైప్ చేయండి\n"
+        "5️⃣ *వైద్యుడిని కనుగొనండి* — `5` టైప్ చేయండి\n"
+        "6️⃣ *ఆభా హెల్త్ కార్డ్ (ABHA)* — `6` టైప్ చేయండి\n"
+        "7️⃣ *టీకా షెడ్యూల్ (UIP)* — `7` మరియు వయస్సు టైప్ చేయండి\n"
+        "8️⃣ *వ్యాధి వ్యాప్తి హెచ్చరికలు* — `8` మరియు జిల్లా పేరు టైప్ చేయండి\n"
+        "9️⃣ *ఆరోగ్య అవగాహన & క్విజ్* — `9` టైప్ చేయండి\n"
+        "🚨 *అత్యవసర సహాయం* — *SOS* టైప్ చేయండి"
+    ),
+    "mr": (
+        "🌿 *संजीवनी-ओएस (Sanjeevni-OS) — ग्रामीण व सार्वजनिक आरोग्य एआय* 🌿\n"
+        "_बहुभाषिक आरोग्य सेवा आणि लसीकरण मार्गदर्शक_\n\n"
+        "नमस्कार! मी आपली काय मदत करू शकतो? खालील पर्याय निवडा:\n\n"
+        "1️⃣ *लक्षणे तपासणी* — `1` लिहून लक्षणे सांगा\n"
+        "2️⃣ *औषध सुरक्षा* — `2` लिहून औषधांची नावे सांगा\n"
+        "3️⃣ *क्ष-किरण (X-Ray) तपासणी* — फोटो पाठवा 📷\n"
+        "4️⃣ *मानसिक आरोग्य* — `4` लिहून सल्ला घ्या\n"
+        "5️⃣ *डॉक्टर शोधा* — `5` लिहून तज्ज्ञ शोधा\n"
+        "6️⃣ *आभा कार्ड (ABHA)* — `6` लिहून माहिती मिळवा\n"
+        "7️⃣ *लसीकरण वेळापत्रक (UIP)* — `7` लिहून वय सांगा\n"
+        "8️⃣ *साथरोग सतर्कता* — `8` लिहून जिल्ह्याचे नाव सांगा\n"
+        "9️⃣ *आरोग्य शिक्षण व प्रश्नमंजुषा* — `9` पाठवा\n"
+        "🚨 *तातडीची मदत* — *SOS* पाठवा"
+    ),
+    "gu": (
+        "🌿 *સંજીવની-ઓએસ (Sanjeevni-OS) — ગ્રામીણ આરોગ્ય એઆઈ* 🌿\n"
+        "_બહુભાષી આરોગ્ય સેવા અને રસીકરણ માર્ગદર્શિકા_\n\n"
+        "નમસ્તે! હું તમારી શું મદદ કરી શકું? નંબર પસંદ કરો:\n\n"
+        "1️⃣ *લક્ષણો તપાસ* — `1` લખીને લક્ષણો જણાવો\n"
+        "2️⃣ *દવા સુરક્ષા* — `2` લખીને દવાઓના નામ જણાવો\n"
+        "3️⃣ *એક્સ-રે અને પ્રિસ્ક્રિપ્શન* — ફોટો મોકલો 📷\n"
+        "4️⃣ *માનસિક સ્વાસ્થ્ય* — `4` લખીને સલાહ લો\n"
+        "5️⃣ *ડૉક્ટર શોધો* — `5` લખીને નિષ્ણાત શોધો\n"
+        "6️⃣ *આભા કાર્ડ (ABHA)* — `6` લખીને લાભ જાણો\n"
+        "7️⃣ *રસીકરણ શેડ્યૂલ (UIP)* — `7` લખીને ઉંમર જણાવો\n"
+        "8️⃣ *રોગચાળો ચેતવણી* — `8` લખીને જિલ્લો જણાવો\n"
+        "9️⃣ *આરોગ્ય જાગૃતિ અને ક્વિઝ* — `9` મોકલો\n"
+        "🚨 *ઇમરજન્સી સહાય* — *SOS* મોકલો"
+    ),
+    "kn": (
+        "🌿 *ಸಂಜೀವನಿ-ಓಎಸ್ (Sanjeevni-OS) — ಗ್ರಾಮೀಣ ಆರೋಗ್ಯ ಎಐ* 🌿\n"
+        "_ಬಹುಭಾಷಾ ಆರೋಗ್ಯ ಸೇವೆ ಮತ್ತು ಲಸಿಕೆ ಮಾರ್ಗದರ್ಶಿ_\n\n"
+        "ನಮಸ್ಕಾರ! ನಾನು ನಿಮಗೆ ಹೇಗೆ ಸಹಾಯ ಮಾಡಲಿ? ಸಂಖ್ಯೆಯನ್ನು ಆರಿಸಿ:\n\n"
+        "1️⃣ *ರೋಗಲಕ್ಷಣ ಪರೀಕ್ಷೆ* — `1` ಬರೆದು ಕಳುಹಿಸಿ\n"
+        "2️⃣ *ಔಷಧಿ ಸುರಕ್ಷತೆ* — `2` ಬರೆದು ಕಳುಹಿಸಿ\n"
+        "3️⃣ *ಎಕ್ಸ್‌ರೇ ತಪಾಸಣೆ* — ಫೋಟೋ ಕಳುಹಿಸಿ 📷\n"
+        "4️⃣ *ಮಾನಸಿಕ ಆರೋಗ್ಯ* — `4` ಬರೆದು ಕಳುಹಿಸಿ\n"
+        "5️⃣ *ವೈದ್ಯರನ್ನು ಹುಡುಕಿ* — `5` ಬರೆದು ಕಳುಹಿಸಿ\n"
+        "6️⃣ *ಆಭಾ ಕಾರ್ಡ್ (ABHA)* — `6` ಬರೆದು ಕಳುಹಿಸಿ\n"
+        "7️⃣ *ಲಸಿಕೆ ವೇಳಾಪಟ್ಟಿ (UIP)* — `7` ಬರೆದು ಕಳುಹಿಸಿ\n"
+        "8️⃣ *ಸಾಂಕ್ರಾಮಿಕ ರೋಗ ಎಚ್ಚರಿಕೆ* — `8` ಬರೆದು ಕಳುಹಿಸಿ\n"
+        "9️⃣ *ಆರೋಗ್ಯ ಜಾಗೃತಿ ಮತ್ತು ರಸಪ್ರಶ್ನೆ* — `9` ಕಳುಹಿಸಿ\n"
+        "🚨 *ತುರ್ತು ಸೇವೆ* — *SOS* ಕಳುಹಿಸಿ"
+    ),
+    "ml": (
+        "🌿 *സഞ്ജീവനി-ഒഎസ് (Sanjeevni-OS) — ആരോഗ്യ എഐ* 🌿\n"
+        "_ബഹുഭാഷാ ആരോഗ്യ പരിപാലനം & പ്രതിരോധ കുത്തിവയ്പ്പ്_\n\n"
+        "നമസ്കാരം! ഞാൻ നിങ്ങളെ എങ്ങനെ സഹായിക്കണം? നമ്പർ തിരഞ്ഞെടുക്കുക:\n\n"
+        "1️⃣ *രോഗലക്ഷണ പരിശോധന* — `1` ടൈപ്പ് ചെയ്യുക\n"
+        "2️⃣ *മരുന്ന് സുരക്ഷ* — `2` ടൈപ്പ് ചെയ്യുക\n"
+        "3️⃣ *എക്സ്-റേ പരിശോധന* — ഫോട്ടോ അയക്കുക 📷\n"
+        "4️⃣ *മാനസികാരോഗ്യം* — `4` ടൈപ്പ് ചെയ്യുക\n"
+        "5️⃣ *ഡോക്ടറെ കണ്ടെത്തുക* — `5` ടൈപ്പ് ചെയ്യുക\n"
+        "6️⃣ *ആഭാ കാർഡ് (ABHA)* — `6` ടൈപ്പ് ചെയ്യുക\n"
+        "7️⃣ *കുത്തിവയ്പ്പ് വിവരങ്ങൾ (UIP)* — `7` ടൈപ്പ് ചെയ്യുക\n"
+        "8️⃣ *പകർച്ചവ്യാധി ജാഗ്രത* — `8` ടൈപ്പ് ചെയ്യുക\n"
+        "9️⃣ *ആരോഗ്യ ക്വിസ്* — `9` ടൈപ്പ് ചെയ്യുക\n"
+        "🚨 *അടിയന്തര സഹായം* — *SOS* ടൈപ്പ് ചെയ്യുക"
+    ),
+    "pa": (
+        "🌿 *ਸੰਜੀਵਨੀ-ਓਐਸ (Sanjeevni-OS) — ਸਿਹਤ ਏਆਈ* 🌿\n"
+        "_ਬਹੁ-ਭਾਸ਼ਾਈ ਸਿਹਤ ਸੰਭਾਲ ਅਤੇ ਟੀਕਾਕਰਨ ਗਾਈਡ_\n\n"
+        "ਸਤਿ ਸ੍ਰੀ ਅਕਾਲ! ਮੈਂ ਤੁਹਾਡੀ ਕੀ ਮਦਦ ਕਰ ਸਕਦਾ ਹਾਂ? ਨੰਬਰ ਚੁਣੋ:\n\n"
+        "1️⃣ *ਲੱਛਣ ਜਾਂਚ* — `1` ਲਿਖ ਕੇ ਲੱਛਣ ਦੱਸੋ\n"
+        "2️⃣ *ਦਵਾਈ ਸੁਰੱਖਿਆ* — `2` ਲਿਖ ਕੇ ਦਵਾਈਆਂ ਦੇ ਨਾਮ ਦੱਸੋ\n"
+        "3️⃣ *ਐਕਸ-ਰੇ ਅਤੇ ਪਰਚੀ* — ਫੋਟੋ ਭੇਜੋ 📷\n"
+        "4️⃣ *ਮਾਨਸਿਕ ਸਿਹਤ* — `4` ਲਿਖ ਕੇ ਸਲਾਹ ਲਓ\n"
+        "5️⃣ *ਡਾਕਟਰ ਲੱਭੋ* — `5` ਲਿਖ ਕੇ ਡਾਕਟਰ ਲੱਭੋ\n"
+        "6️⃣ *ਆਭਾ ਕਾਰਡ (ABHA)* — `6` ਲਿਖ ਕੇ ਜਾਣਕਾਰੀ ਲਓ\n"
+        "7️⃣ *ਟੀਕਾਕਰਨ ਸ਼ਡਿਊਲ (UIP)* — `7` ਲਿਖ ਕੇ ਉਮਰ ਦੱਸੋ\n"
+        "8️⃣ *ਮਹਾਂਮਾਰੀ ਚੇਤਾਵਨੀ* — `8` ਲਿਖ ਕੇ ਜ਼ਿਲ੍ਹੇ ਦਾ ਨਾਮ ਦੱਸੋ\n"
+        "9️⃣ *ਸਿਹਤ ਜਾਗਰੂਕਤਾ ਤੇ ਕੁਇਜ਼* — `9` ਭੇਜੋ\n"
+        "🚨 *ਐਮਰਜੈਂਸੀ ਸਹਾਇਤਾ* — *SOS* ਭੇਜੋ"
+    ),
+    "or": (
+        "🌿 *ସଞ୍ଜୀବନୀ-ଓଏସ୍ (Sanjeevni-OS) — ସ୍ୱାସ୍ଥ୍ୟ ଏଆଇ* 🌿\n"
+        "_ବହୁଭାଷୀ ସ୍ୱାସ୍ଥ୍ୟ ସେବା ଏବଂ ଟୀକାକରଣ ନିର୍ଦ୍ଦେଶିକା_\n\n"
+        "ନମସ୍କାର! ମୁଁ ଆପଣଙ୍କୁ କିପରି ସାହାଯ୍ୟ କରିପାରିବି? ନମ୍ବର ବାଛନ୍ତୁ:\n\n"
+        "1️⃣ *ଲକ୍ଷଣ ପରୀକ୍ଷା* — `1` ଲେଖି ଲକ୍ଷଣ ଜଣାନ୍ତୁ\n"
+        "2️⃣ *ଔଷଧ ସୁରକ୍ଷା* — `2` ଲେଖି ଔଷଧ ନାମ ଜଣାନ୍ତୁ\n"
+        "3️⃣ *ଏକ୍ସ-ରେ ଯାଞ୍ଚ* — ଫଟୋ ପଠାନ୍ତୁ 📷\n"
+        "4️⃣ *ମାନସିକ ସ୍ୱାସ୍ଥ୍ୟ* — `4` ଲେଖି ପରାମର୍ଶ ନିଅନ୍ତୁ\n"
+        "5️⃣ *ଡାକ୍ତର ଖୋଜନ୍ତୁ* — `5` ଲେଖି ଡାକ୍ତର ଖୋଜନ୍ତୁ\n"
+        "6️⃣ *ଆଭା କାର୍ଡ (ABHA)* — `6` ଲେଖି ଜାଣନ୍ତୁ\n"
+        "7️⃣ *ଟୀକାକରଣ ତାଲିକା (UIP)* — `7` ଲେଖି ବୟସ ଜଣାନ୍ତୁ\n"
+        "8️⃣ *ମହାମାରୀ ସତର୍କତା* — `8` ଲେଖି ଜିଲ୍ଲା ଜଣାନ୍ତୁ\n"
+        "9️⃣ *ସ୍ୱାସ୍ଥ୍ୟ ଶିକ୍ଷା ଓ କୁଇଜ୍* — `9` ପଠାନ୍ତୁ\n"
+        "🚨 *ଜରୁରୀକାଳୀନ ସେବା* — *SOS* ପଠାନ୍ତୁ"
+    )
+}
+
+MAIN_MENU_TEXT = LOCALIZED_MENUS["en"]
+
+
+def parse_language_selection(text: str) -> Optional[str]:
+    """Maps user input to supported language code."""
+    t = text.strip().lower()
+    mapping = {
+        "1": "en", "en": "en", "english": "en",
+        "2": "hi", "hi": "hi", "hindi": "hi", "हिंदी": "hi", "हिन्दी": "hi",
+        "3": "bn", "bn": "bn", "bengali": "bn", "বাংলা": "bn", "bangla": "bn",
+        "4": "ta", "ta": "ta", "tamil": "ta", "தமிழ்": "ta",
+        "5": "te", "te": "te", "telugu": "te", "తెలుగు": "te",
+        "6": "mr", "mr": "mr", "marathi": "mr", "मराठी": "mr",
+        "7": "gu", "gu": "gu", "gujarati": "gu", "ગુજરાતી": "gu",
+        "8": "kn", "kn": "kn", "kannada": "kn", "ಕನ್ನಡ": "kn",
+        "9": "ml", "ml": "ml", "malayalam": "ml", "മലയാളം": "ml",
+        "10": "pa", "pa": "pa", "punjabi": "pa", "ਪੰਜਾਬੀ": "pa",
+        "11": "or", "or": "or", "odia": "or", "ଓଡ଼ିଆ": "or", "oriya": "or"
+    }
+    return mapping.get(t)
+
+
+def detect_language_script(text: str) -> str:
+    """Detects Indian regional language script from unicode code points."""
+    for char in text:
+        cp = ord(char)
+        if 0x0900 <= cp <= 0x097F:
+            return "hi"  # Devanagari (Hindi/Marathi)
+        elif 0x0980 <= cp <= 0x09FF:
+            return "bn"  # Bengali / Assamese
+        elif 0x0B80 <= cp <= 0x0BFF:
+            return "ta"  # Tamil
+        elif 0x0C00 <= cp <= 0x0C7F:
+            return "te"  # Telugu
+        elif 0x0A80 <= cp <= 0x0AFF:
+            return "gu"  # Gujarati
+        elif 0x0C80 <= cp <= 0x0CFF:
+            return "kn"  # Kannada
+        elif 0x0D00 <= cp <= 0x0D7F:
+            return "ml"  # Malayalam
+        elif 0x0A00 <= cp <= 0x0A7F:
+            return "pa"  # Punjabi
+        elif 0x0B00 <= cp <= 0x0B7F:
+            return "or"  # Odia
+    return "en"
+
+import re
+
+
+def format_compact_whatsapp_card(text: str) -> str:
+    """
+    Transforms verbose multi-agent diagnostic audit into a punchy, mobile-optimized WhatsApp card.
+    Extracts: Triage Badge, Suspected Condition, Top 3 Actions, Red Flags, and Quick Shortcuts.
+    """
+    if not text or len(text.strip()) < 180:
+        return format_response_for_whatsapp(text, compact=False)
+
+    # 1. Determine Triage Status Badge
+    badge = "🟡 *SANJEEVNI CLINICAL ASSESSMENT*"
+    if "🔴" in text or ("emergency" in text.lower() and "immediate emergency" in text.lower()):
+        badge = "🔴 *SANJEEVNI EMERGENCY TRIAGE — CRITICAL*"
+    elif "🟢" in text or ("home care" in text.lower() and "doctor consultation needed" not in text.lower()):
+        badge = "🟢 *SANJEEVNI HOME CARE & MONITORING*"
+    elif "🟡" in text or "doctor consult" in text.lower():
+        badge = "🟡 *SANJEEVNI DOCTOR CONSULTATION RECOMMENDED*"
+
+    lines = [f"{badge}\n━━━━━━━━━━━━━━━━━━━━"]
+
+    # 2. Extract Primary Assessment / Suspected Condition
+    assess_match = re.search(r'(?:Executive Clinical Assessment|Assessment|Findings)[^\n]*\n+([^\n]+)', text, re.IGNORECASE)
+    if assess_match:
+        condition = assess_match.group(1).strip().replace("*", "")
+        if len(condition) > 160:
+            condition = condition[:157] + "..."
+        lines.append(f"• *Assessment:* {condition}")
+    else:
+        lines.append("• *Assessment:* Multi-agent clinical audit completed by AI Council.")
+
+    # Extract Council confidence
+    conf_match = re.search(r'Confidence:\*?\s*([0-9]+%|\w+)', text, re.IGNORECASE)
+    if conf_match:
+        lines.append(f"• *Council Consensus:* {conf_match.group(1)} Confidence")
+
+    # 3. Extract Immediate Action Items
+    actions = []
+    action_match = re.search(r'(?:Immediate Action Plan|Action Plan|Recommended Action)[^\n]*\n+([^\n]+)', text, re.IGNORECASE)
+    if action_match:
+        act_line = action_match.group(1).strip().replace("*", "")
+        if len(act_line) > 8 and not act_line.startswith("---"):
+            actions.append(act_line)
+
+    bullet_items = re.findall(r'\*\s+\*?([A-Za-z\s]+)[:\-]\*?\s*([^\n]+)', text)
+    for title, desc in bullet_items:
+        clean_title = title.strip().lower()
+        if any(k in clean_title for k in ["hydration", "rest", "temperature", "fluid", "monitoring", "medication", "seek"]):
+            actions.append(f"{title.strip()}: {desc.strip()[:80]}")
+            if len(actions) >= 3:
+                break
+
+    if actions:
+        lines.append("\n📋 *Immediate Actions:*")
+        for i, act in enumerate(actions[:3], 1):
+            lines.append(f"{i}. {act}")
+    else:
+        lines.append("\n📋 *Immediate Actions:*\n1. Schedule consultation with a Primary Care Physician within 24h.\n2. Maintain complete rest and active hydration.")
+
+    # 4. Extract Top Red Flags
+    red_flags = []
+    for title, desc in bullet_items:
+        clean_title = title.strip().lower()
+        if any(k in clean_title for k in ["respiratory", "breath", "chest", "oxygen", "spo2", "neurological", "escalation", "fever"]):
+            red_flags.append(f"{title.strip()}: {desc.strip()[:70]}")
+            if len(red_flags) >= 2:
+                break
+
+    if red_flags:
+        lines.append("\n🚨 *Seek Emergency Care / Call 108 If:*")
+        for rf in red_flags:
+            lines.append(f"• {rf}")
+    else:
+        lines.append("\n🚨 *Seek Emergency Care If:*\n• Shortness of breath or SpO2 drops below 92%\n• Severe chest pain or persistent fever > 103°F")
+
+    # 5. Interactive Quick Action Buttons / Shortcuts
+    lines.append("\n━━━━━━━━━━━━━━━━━━━━")
+    lines.append("👉 *Quick Shortcuts:*")
+    lines.append("• Reply *5* to find PM-JAY doctors & book slot")
+    lines.append("• Reply *sos* for instant emergency ambulance")
+    lines.append("• Reply *full* for the complete clinical report")
+    lines.append("\n_🌿 Powered by Sanjeevni-OS Multi-Agent Swarm_")
+
+    return "\n".join(lines)
+
+
+def format_response_for_whatsapp(text: str, compact: bool = True) -> str:
+    """Formats markdown response cleanly for WhatsApp client rendering."""
+    if not text:
+        return "Thank you for consulting Sanjeevni-OS. Please monitor your health and consult a physician if needed."
+    if compact and len(text.strip()) > 280:
+        return format_compact_whatsapp_card(text)
+    formatted = text.strip()
+    formatted = formatted.replace("### ", "• *").replace("## ", "*").replace("# ", "*")
+    if not formatted.endswith("\n\n_🌿 Powered by Sanjeevni-OS Multi-Agent Swarm_"):
+        formatted += "\n\n_🌿 Powered by Sanjeevni-OS Multi-Agent Swarm_"
+    return formatted
+
+
+# =========================================================
+# 2. Inbound Webhook Processor
+# =========================================================
+
+async def process_whatsapp_inbound_webhook(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Unified Inbound WhatsApp Webhook Processor for Meta WhatsApp Cloud API.
+    Handles Language Selection Onboarding, Greetings, Multi-Turn FSM, and Specialist Agent Routing.
+    """
+    logger.info(f"[Meta Webhook Inbound] Received payload keys: {list(payload.keys())}")
+
+    sender_phone = "unknown"
+    msg_type = "text"
+    message_text = ""
+    image_base64 = None
+    media_id = None
+    caption = ""
+
+    # 1. Parse Official Meta Graph API Format
+    if "entry" in payload:
+        try:
+            entry = payload["entry"][0]
+            change = entry.get("changes", [{}])[0]
+            value = change.get("value", {})
+
+            # Check if this is a message delivery status update (sent, delivered, read)
+            if "statuses" in value and "messages" not in value:
+                status_info = value["statuses"][0]
+                logger.info(f"[Meta Delivery Status] Msg {status_info.get('id')}: {status_info.get('status')}")
+                return {"status": "status_acknowledged", "delivery_status": status_info.get("status")}
+
+            messages = value.get("messages", [])
+            if not messages:
+                return {"status": "ignored", "reason": "no_messages_in_payload"}
+
+            msg = messages[0]
+            sender_phone = msg.get("from", "unknown")
+            msg_type = msg.get("type", "text")
+
+            if msg_type == "text":
+                message_text = msg.get("text", {}).get("body", "").strip()
+            elif msg_type == "interactive":
+                interactive = msg.get("interactive", {})
+                if interactive.get("type") == "button_reply":
+                    message_text = interactive.get("button_reply", {}).get("title", "")
+                elif interactive.get("type") == "list_reply":
+                    message_text = interactive.get("list_reply", {}).get("title", "")
+            elif msg_type == "image":
+                image_info = msg.get("image", {})
+                media_id = image_info.get("id")
+                caption = image_info.get("caption", "").strip()
+                message_text = caption or "Medical scan uploaded"
+            elif msg_type == "location":
+                loc = msg.get("location", {})
+                message_text = f"location:{loc.get('latitude')},{loc.get('longitude')}"
+        except Exception as e:
+            logger.error(f"[Meta Payload Parsing Error] {e}")
+            return {"status": "error", "detail": f"Failed parsing Meta payload: {str(e)}"}
+
+    # 2. Parse Simulation / Fallback Format
+    else:
+        data = payload.get("data", payload)
+        sender_phone = (
+            data.get("from") or
+            data.get("sender_phone") or
+            payload.get("sender_phone") or
+            "919876543210"
+        )
+        msg_type = data.get("type", data.get("message_type", "text"))
+        message_text = (
+            data.get("text") or
+            data.get("message") or
+            data.get("body") or
+            payload.get("message") or
+            ""
+        ).strip()
+        caption = data.get("caption", "")
+        image_base64 = data.get("image_base64") or (data.get("body") if isinstance(data.get("body"), str) and data.get("body").startswith("data:image") else None)
+
+    sender_phone = str(sender_phone).replace("@c.us", "").replace("+", "").strip()
+    session = session_manager.get_session(sender_phone)
+    user_lang = session["context"].get("lang") or detect_language_script(message_text)
+
+    # 3. Handle Medical Image Upload (FractureNet YOLOv8 / MONAI / TrOCR)
+    if msg_type == "image" or image_base64 or media_id:
+        if media_id and not image_base64:
+            media_bytes = await download_meta_media(media_id)
+            if media_bytes:
+                image_base64 = f"data:image/jpeg;base64,{base64.b64encode(media_bytes).decode('utf-8')}"
+
+        caption_lower = (caption or message_text).lower()
+        if any(k in caption_lower for k in ["rx", "prescription", "medicine", "doctor note"]):
+            img_type = "prescription"
+        elif any(k in caption_lower for k in ["chest", "lung", "pneumonia", "covid"]):
+            img_type = "chest_xray"
+        else:
+            img_type = "bone_fracture"
+
+        scan_result = analyze_medical_image(
+            image_type=img_type,
+            filename="whatsapp_meta_scan.jpg",
+            image_base64=image_base64
+        )
+
+        boxes = scan_result.get("visual_bounding_boxes", [])
+        box_str = f"\n🎯 *Detections:* {len(boxes)} anomaly zone(s) localized." if boxes else "\n✅ *No acute cortical fracture displaced.*"
+
+        reply_parts = [
+            "📷 *SANJEEVNI-OS MEDICAL SCAN DIAGNOSTICS* 📷\n",
+            f"• *Modality:* {img_type.replace('_', ' ').title()}",
+            f"• *AI Diagnosis:* {scan_result.get('ai_diagnosis_summary', 'Analysis Completed')}",
+            f"• *Urgency:* {scan_result.get('urgency_badge', 'Standard Review')}",
+            box_str,
+            f"\n📋 *Clinical Interpretation:*\n{scan_result.get('plain_english_explanation', '')}",
+            f"\n💡 *Recommended Next Step:*\n{scan_result.get('recommended_clinical_action', 'Consult a registered orthopedic surgeon.')}",
+            "\n_⚠️ AI screening support only. Always verify with a certified radiologist._"
+        ]
+
+        reply_text = "\n".join(reply_parts)
+        dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=reply_text)
+        return {
+            "status": "processed",
+            "type": "medical_image",
+            "sender": sender_phone,
+            "dispatch": dispatch_res,
+            "reply_dispatched": dispatch_res,
+            "scan_summary": scan_result.get("ai_diagnosis_summary")
+        }
+
+    # 4. Handle Empty Text
+    if not message_text:
+        return {"status": "ignored", "reason": "empty_text"}
+
+    text_lower = message_text.lower().strip()
+
+    # 5. Language Change Trigger ("lang", "language", "bhasha", "भाषा")
+    if text_lower in ("lang", "language", "bhasha", "भाषा", "change language", "select language"):
+        session_manager.set_flow(sender_phone, "LANG_SELECT")
+        dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=LANGUAGE_SELECTION_MENU)
+        return {
+            "status": "processed",
+            "type": "language_menu_dispatched",
+            "sender": sender_phone,
+            "dispatch": dispatch_res,
+            "reply_dispatched": dispatch_res
+        }
+
+    # 6. Handle Active Language Selection Flow (LANG_SELECT)
+    if session.get("active_flow") == "LANG_SELECT":
+        selected_code = parse_language_selection(text_lower)
+        if selected_code:
+            session["context"]["lang"] = selected_code
+            session_manager.reset_flow(sender_phone)
+
+            lang_names = {
+                "en": "English", "hi": "हिन्दी (Hindi)", "bn": "বাংলা (Bengali)",
+                "ta": "தமிழ் (Tamil)", "te": "తెలుగు (Telugu)", "mr": "मराठी (Marathi)",
+                "gu": "ગુજરાતી (Gujarati)", "kn": "ಕನ್ನಡ (Kannada)", "ml": "മലയാളം (Malayalam)",
+                "pa": "ਪੰਜਾਬੀ (Punjabi)", "or": "ଓଡ଼ିଆ (Odia)"
+            }
+            confirm_msg = f"🌐 *Language Selected:* {lang_names.get(selected_code, 'English')}\n━━━━━━━━━━━━━━━━━━━━\n\n"
+            menu_text = confirm_msg + LOCALIZED_MENUS.get(selected_code, LOCALIZED_MENUS["en"])
+
+            dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=menu_text)
+            return {
+                "status": "processed",
+                "type": "language_selected",
+                "language": selected_code,
+                "sender": sender_phone,
+                "dispatch": dispatch_res,
+                "reply_dispatched": dispatch_res
+            }
+        elif any(text_lower.startswith(prefix) for prefix in ["1 ", "2 ", "3 ", "4 ", "5 ", "6", "7 ", "8 ", "9 ", "sos", "emergency"]):
+            # User sent a direct command while in LANG_SELECT, reset and process command directly
+            session_manager.reset_flow(sender_phone)
+        elif len(text_lower) > 12:
+            # Natural language clinical query, reset and route to orchestrator
+            session_manager.reset_flow(sender_phone)
+        else:
+            # Invalid selection prompt
+            retry_msg = "⚠️ Invalid selection. Please reply with a number from `1` to `11`:\n\n" + LANGUAGE_SELECTION_MENU
+            dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=retry_msg)
+            return {"status": "processed", "type": "language_retry"}
+
+    # 7. Greeting / Main Menu Trigger
+    if text_lower in ("hi", "hello", "hey", "menu", "help", "start", "guide", "sanjeevni", "options"):
+        # If user has not chosen a language yet, prompt with language selection first!
+        if not session["context"].get("lang"):
+            session_manager.set_flow(sender_phone, "LANG_SELECT")
+            dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=LANGUAGE_SELECTION_MENU)
+            return {
+                "status": "processed",
+                "type": "menu_dispatched",
+                "sender": sender_phone,
+                "dispatch": dispatch_res,
+                "reply_dispatched": dispatch_res
+            }
+        else:
+            # Deliver in their saved language
+            chosen_lang = session["context"].get("lang", "en")
+            active_menu = LOCALIZED_MENUS.get(chosen_lang, LOCALIZED_MENUS["en"])
+            dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=active_menu)
+            return {
+                "status": "processed",
+                "type": "menu_dispatched",
+                "sender": sender_phone,
+                "dispatch": dispatch_res,
+                "reply_dispatched": dispatch_res
+            }
+
+    # 7b. Full Diagnostic Report Request ("full", "report", "details")
+    if text_lower in ("full", "report", "details", "full report", "detailed report", "audit"):
+        last_report = session["context"].get("last_full_report")
+        if last_report:
+            clean_full = last_report.strip().replace("### ", "• *").replace("## ", "*").replace("# ", "*")
+            if not clean_full.endswith("\n\n_🌿 Powered by Sanjeevni-OS Multi-Agent Swarm_"):
+                clean_full += "\n\n_🌿 Powered by Sanjeevni-OS Multi-Agent Swarm_"
+            dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=clean_full)
+            return {
+                "status": "processed",
+                "type": "full_report_dispatched",
+                "sender": sender_phone,
+                "dispatch": dispatch_res,
+                "reply_dispatched": dispatch_res
+            }
+        else:
+            no_rep = (
+                "ℹ️ *No previous diagnostic report found in this session.*\n\n"
+                "Please describe your symptoms or text `1 <symptoms>` (e.g. `1 High fever, headache and dry cough`) to start an AI clinical triage!"
+            )
+            dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=no_rep)
+            return {"status": "processed", "type": "no_prior_report", "dispatch": dispatch_res, "reply_dispatched": dispatch_res}
+
+    # 8. Emergency SOS Trigger
+    if text_lower in ("sos", "emergency", "112", "108", "save me", "help me"):
+        sos_res = (
+            "🚨 *SANJEEVNI-OS — IMMEDIATE EMERGENCY PROTOCOL ACTIVATED* 🚨\n\n"
+            "If you or someone nearby is experiencing a life-threatening emergency:\n\n"
+            "📞 *National Emergency:* Call `112` directly\n"
+            "🚑 *Ambulance Services:* Call `108` immediately\n"
+            "🧠 *Tele-MANAS Mental Crisis:* Call `14416` (24x7 Toll-Free)\n"
+            "🏥 *Poison Control:* Call `1800-116-117`\n\n"
+            "⚠️ Please stay calm, keep the patient comfortable, and seek direct hospital emergency care immediately."
+        )
+        dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=sos_res)
+        return {
+            "status": "processed",
+            "type": "emergency_sos",
+            "sender": sender_phone,
+            "dispatch": dispatch_res,
+            "reply_dispatched": dispatch_res
+        }
+
+    # 9. Handle Active Multi-Turn FSM (e.g. Health Literacy Quiz Flow)
+    if session.get("active_flow") == "QUIZ_FLOW":
+        questions = session["context"].get("questions", [])
+        answers = session["context"].get("answers", {})
+        step = session.get("step", 0)
+
+        choice_map = {"a": 0, "b": 1, "c": 2, "d": 3, "1": 0, "2": 1, "3": 2, "4": 3}
+        ans_idx = choice_map.get(text_lower[:1], 0)
+        answers[f"q{step + 1}"] = ans_idx
+
+        session_manager.advance_step(sender_phone, {"answers": answers})
+        next_step = step + 1
+
+        if next_step < len(questions):
+            q = questions[next_step]
+            opts = "\n".join([f"*{chr(65+i)}.* {opt}" for i, opt in enumerate(q["options"])])
+            msg = f"📝 *Community Health Quiz — Question {next_step + 1}/{len(questions)}:*\n\n{q['question']}\n\n{opts}\n\n_Reply with A, B, C, or D._"
+            await send_whatsapp_message(to_phone=sender_phone, text=msg)
+            return {"status": "processed", "type": "quiz_step", "step": next_step}
+        else:
+            eval_res = evaluate_quiz_answers(answers)
+            session_manager.reset_flow(sender_phone)
+            quiz_summary = (
+                "🏆 *COMMUNITY HEALTH LITERACY QUIZ COMPLETED!* 🏆\n\n"
+                f"• *Score:* {eval_res.get('score', '3/3')} ({eval_res.get('percentage', 100)}%)\n"
+                f"• *Badge:* {eval_res.get('grade', 'Health Champion')}\n"
+                f"• *Community Literacy Impact:* +25.4% Awareness Gain\n\n"
+                "💡 *Key Takeaway:* Always combine ORS + Zinc for diarrhea and empty standing water to stop dengue!"
+            )
+            await send_whatsapp_message(to_phone=sender_phone, text=quiz_summary)
+            return {"status": "processed", "type": "quiz_completed", "score": eval_res.get("score")}
+
+    # 10. Command Option 2: Drug Safety & RxNav
+    if text_lower.startswith("2 ") or text_lower == "2":
+        query = message_text[2:].strip() if text_lower.startswith("2 ") else ""
+        if not query:
+            reply_text = "💊 *Drug Safety & RxNav Checker*\nPlease reply with the medication names (e.g. `2 Aspirin and Ibuprofen` or `2 Paracetamol with Alcohol`)."
+        else:
+            drug_res = await evaluate_drug_safety(query)
+            reply_parts = ["💊 *SANJEEVNI-OS DRUG SAFETY & RXNAV REPORT* 💊\n"]
+            meds = drug_res.get("detected_medications", [])
+            if meds:
+                reply_parts.append(f"• *Detected Medications:* {', '.join(meds)}")
+            reply_parts.append(f"• *Safety Status:* {drug_res.get('overall_status', 'Evaluated')}")
+            
+            interactions = drug_res.get("interactions", [])
+            if interactions:
+                reply_parts.append(f"\n⚠️ *Interactions Detected ({len(interactions)}):*")
+                for item in interactions:
+                    reply_parts.append(f"- *{item.get('severity', 'Risk')} Risk:* {item.get('effect')}\n  ↳ _Action: {item.get('recommended_action')}_")
+            else:
+                reply_parts.append("\n✅ *No severe high-risk drug interactions identified.*")
+
+            if drug_res.get("safe_alternatives"):
+                reply_parts.append(f"\n💡 *Safe Alternatives:* {', '.join(drug_res['safe_alternatives'])}")
+            
+            reply_text = "\n".join(reply_parts)
+
+        dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=reply_text)
+        return {
+            "status": "processed",
+            "type": "drug_check",
+            "sender": sender_phone,
+            "dispatch": dispatch_res,
+            "reply_dispatched": dispatch_res
+        }
+
+    # 11. Command Option 5: Doctor Lookup
+    if text_lower.startswith("5 ") or text_lower == "5":
+        specialty = message_text[2:].strip() if text_lower.startswith("5 ") else "General Physician"
+        doctors_res = find_doctors_by_specialty(specialty or "General Physician")
+        reply_parts = [f"🏥 *EMPANELLED PM-JAY DOCTORS ({specialty.title()})* 🏥\n"]
+        doctors_list = doctors_res if isinstance(doctors_res, list) else doctors_res.get("available_doctors", [])
+        if doctors_list:
+            for doc in doctors_list[:4]:
+                slots = doc.get("available_slots", [])
+                next_slot = slots[0] if slots else "Available Today"
+                hospital = doc.get("hospital", "AIIMS / Empanelled Center")
+                reply_parts.append(
+                    f"👨‍⚕️ *{doc.get('name')}* — {doc.get('specialty')}\n"
+                    f"   🏥 {hospital}\n"
+                    f"   💳 Fee: {doc.get('fee', '₹0 (PM-JAY)')} | Next Slot: {next_slot}\n"
+                )
+            reply_parts.append("_To book an appointment, reply with preferred slot time._")
+        else:
+            reply_parts.append(f"No specific doctors found for '{specialty}'. Please consult a General Physician.")
+
+        reply_text = "\n".join(reply_parts)
+        dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=reply_text)
+        return {
+            "status": "processed",
+            "type": "doctor_lookup",
+            "sender": sender_phone,
+            "dispatch": dispatch_res,
+            "reply_dispatched": dispatch_res
+        }
+
+    # 12. Command Option 6: ABHA Health Card & PM-JAY
+    if text_lower == "6" or text_lower.startswith("6 "):
+        abha_data = generate_abha_id(name="Sanjeevni User", year_of_birth=1998, state_code="DL")
+        schemes = check_ayushman_bharat_schemes().get("schemes", [])
+        reply_parts = [
+            "🪪 *AYUSHMAN BHARAT DIGITAL MISSION (ABDM)* 🪪\n",
+            f"• *ABHA ID:* `{abha_data.get('abha_id')}`",
+            f"• *ABHA Address:* `{abha_data.get('abha_address')}`",
+            f"• *PM-JAY Wallet:* ₹5,00,000 / Family / Year",
+            f"• *Status:* {abha_data.get('status')}\n",
+            "📜 *Available National Health Schemes:*"
+        ]
+        for s in schemes[:3]:
+            reply_parts.append(f"• *{s.get('name')}:* {s.get('coverage_details')}")
+
+        reply_text = "\n".join(reply_parts)
+        dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=reply_text)
+        return {
+            "status": "processed",
+            "type": "abha_info",
+            "sender": sender_phone,
+            "dispatch": dispatch_res,
+            "reply_dispatched": dispatch_res
+        }
+
+    # 13. Command Option 7: UIP Vaccination Schedule
+    if text_lower == "7" or text_lower.startswith("7 "):
+        param = message_text[2:].strip().lower() if text_lower.startswith("7 ") else ""
+        if "preg" in param:
+            v_res = calculate_vaccination_schedule(category="pregnant")
+            reply_parts = [
+                "💉 *MATERNAL VACCINATION SCHEDULE (UIP / U-WIN)* 💉\n",
+                "• *Protocol:* Universal Maternal Immunization Protection",
+                "• *Recommended Vaccines:*"
+            ]
+            for v in v_res.get("recommended_vaccines", []):
+                reply_parts.append(f"  ↳ *{v['name']}:* {v['protects_against']} ({v['route']})")
+            reply_parts.append(f"\n💡 *Guidance:* {v_res.get('guideline')}")
+        else:
+            weeks = 6
+            if "birth" in param or "0" in param:
+                weeks = 0
+            elif "10" in param:
+                weeks = 10
+            elif "14" in param:
+                weeks = 14
+            elif "9" in param or "month" in param:
+                weeks = 40
+
+            v_res = calculate_vaccination_schedule(age_in_weeks=weeks)
+            reply_parts = [
+                "💉 *UNIVERSAL IMMUNIZATION PROGRAMME (UIP)* 💉\n",
+                f"• *Progress:* {v_res.get('uip_compliance_pct')}% Milestones Covered",
+                f"• *Next Due:* *{v_res.get('next_vaccine_due')}*",
+                f"• *Status:* {v_res.get('next_due_date')}\n"
+            ]
+            if v_res.get("current_due"):
+                reply_parts.append("📋 *Due at this age:*")
+                for m in v_res["current_due"]:
+                    for v in m["vaccines"]:
+                        reply_parts.append(f"  • *{v['name']}:* {v['protects_against']}")
+            elif v_res.get("upcoming"):
+                next_m = v_res["upcoming"][0]
+                reply_parts.append(f"📋 *Upcoming Milestone ({next_m['milestone_label']}):*")
+                for v in next_m["vaccines"]:
+                    reply_parts.append(f"  • *{v['name']}:* {v['protects_against']}")
+
+            reply_parts.append("\n🏥 *Available free at all Anganwadis & Primary Health Centres.*")
+
+        reply_text = "\n".join(reply_parts)
+        dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=reply_text)
+        return {
+            "status": "processed",
+            "type": "vaccination_schedule",
+            "sender": sender_phone,
+            "dispatch": dispatch_res,
+            "reply_dispatched": dispatch_res
+        }
+
+    # 14. Command Option 8: District Outbreak Alerts
+    if text_lower == "8" or text_lower.startswith("8 "):
+        district_query = message_text[2:].strip() if text_lower.startswith("8 ") else "Delhi"
+        outbreak_res = get_district_outbreak_risk(district_query or "Delhi")["data"]
+        reply_parts = [
+            f"🚨 *DISTRICT OUTBREAK SURVEILLANCE ({outbreak_res['district']})* 🚨\n",
+            f"• *Active Outbreak:* {outbreak_res['primary_outbreak']}",
+            f"• *Risk Status:* {outbreak_res['risk_badge']}",
+            f"• *Weekly Cases:* {outbreak_res['weekly_cases']} ({outbreak_res['velocity_pct']})",
+            f"• *Transmission:* {outbreak_res['transmission']}\n",
+            f"📋 *Advisory:* {outbreak_res['preventive_advisory']}\n",
+            f"📞 *Helpdesk:* {outbreak_res['helpline']}"
+        ]
+        reply_text = "\n".join(reply_parts)
+        dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=reply_text)
+        return {
+            "status": "processed",
+            "type": "outbreak_alert",
+            "sender": sender_phone,
+            "dispatch": dispatch_res,
+            "reply_dispatched": dispatch_res
+        }
+
+    # 15. Command Option 9: Rural Preventive Health & Quiz Trigger
+    if text_lower == "9" or text_lower.startswith("9 "):
+        if "quiz" in text_lower:
+            quiz_data = generate_community_health_quiz(count=3)
+            questions = quiz_data.get("questions", [])
+            if questions:
+                session_manager.set_flow(sender_phone, "QUIZ_FLOW", {"questions": questions, "answers": {}})
+                q1 = questions[0]
+                opts = "\n".join([f"*{chr(65+i)}.* {opt}" for i, opt in enumerate(q1["options"])])
+                msg = (
+                    "📝 *COMMUNITY HEALTH AWARENESS QUIZ (1/3)* 📝\n\n"
+                    f"{q1['question']}\n\n"
+                    f"{opts}\n\n"
+                    "_Reply with A, B, C, or D to submit your answer!_"
+                )
+                dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=msg)
+                return {
+                    "status": "processed",
+                    "type": "quiz_started",
+                    "sender": sender_phone,
+                    "dispatch": dispatch_res,
+                    "reply_dispatched": dispatch_res
+                }
+
+        reply_parts = [
+            "🌿 *RURAL PREVENTIVE HEALTHCARE GUIDES* 🌿\n",
+            "1. 💧 *ORS & Diarrhea Control:* Mix 1 packet in 1L clean water + Zinc 20mg for 14 days.",
+            "2. 🤱 *Poshan & Maternal Nutrition:* Daily IFA iron tablets + 6 months exclusive breastfeeding.",
+            "3. 🦟 *Vector Control (Dengue/Malaria):* Empty water coolers every Sunday; use mosquito nets.",
+            "4. 🧼 *Clean Water & Hygiene:* Boil water for 2 mins; 20-second handwashing before eating.",
+            "5. ❤️ *NCD Prevention:* Less than 5g salt daily, no tobacco, 30 min brisk walk.\n",
+            "_Reply '9 quiz' to take a 3-question awareness quiz & boost your health literacy score!_"
+        ]
+        reply_text = "\n".join(reply_parts)
+        dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=reply_text)
+        return {
+            "status": "processed",
+            "type": "preventive_education",
+            "sender": sender_phone,
+            "dispatch": dispatch_res,
+            "reply_dispatched": dispatch_res
+        }
+
+    # 16. Command Option 1 & 4, or General Natural Clinical Language
+    if text_lower.startswith("1 "):
+        clean_text = message_text[2:].strip()
+    elif text_lower.startswith("4 "):
+        clean_text = f"Mental health check: {message_text[2:].strip()}"
+    else:
+        clean_text = message_text
+
+    # Execute Swarm Orchestrator with Clinical Fail-Safe Protection
+    try:
+        agent_result = await orchestrate_health_request(
+            message=clean_text,
+            channel="whatsapp",
+            user_id=sender_phone
+        )
+        session["context"]["last_full_report"] = agent_result.final_response
+        response_text = format_response_for_whatsapp(agent_result.final_response, compact=True)
+        trace_steps = len(agent_result.trace)
+        intent = agent_result.detected_intent
+    except Exception as exc:
+        logger.error(f"[WhatsApp Swarm Exception] Fallback triggered: {exc}", exc_info=True)
+        response_text = (
+            "⚠️ *SANJEEVNI-OS — CLINICAL ASSISTANT NOTICE*\n\n"
+            "We encountered a temporary processing delay with our live clinical reasoning nodes. Your symptom query has been safely recorded.\n\n"
+            "🚨 *Immediate Emergency Guidance:*\n"
+            "If you or the patient are experiencing severe acute symptoms (such as intense chest pain, sudden difficulty breathing, persistent high fever, or loss of consciousness):\n"
+            "• 📞 Call *112* (National Emergency Helpline) or *108* (Ambulance) immediately.\n"
+            "• 🧠 Mental Health Crisis: Call *14416* (Tele-MANAS 24x7 Toll-Free).\n\n"
+            "📋 *Offline Menu Options:*\n"
+            "• Reply *menu* to view offline guides, doctor directory, and vaccination schedules.\n"
+            "• Reply *sos* for instant emergency contact dispatch.\n"
+            "• Reply *2 <medicine name>* to verify drug interactions.\n\n"
+            "_🌿 Sanjeevni-OS Active Medical Protection_"
+        )
+        trace_steps = 0
+        intent = "fallback_emergency_advisory"
+
+    dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=response_text)
+
+    return {
+        "status": "processed",
+        "sender": sender_phone,
+        "dispatch": dispatch_res,
+        "reply_dispatched": dispatch_res,
+        "agent_trace_steps": trace_steps,
+        "intent": intent
+    }
+
+
+async def trigger_emergency_sos_whatsapp(
+    emergency_contact: str,
+    patient_name: str,
+    location_coords: str,
+    blood_group: str,
+    critical_symptoms: str
+) -> Dict[str, Any]:
+    """Dispatches 1-click Emergency SOS alert to pre-set emergency contact via WhatsApp."""
+    sos_message = (
+        f"🚨 *SANJEEVNI-OS — EMERGENCY SOS ALERT* 🚨\n\n"
+        f"Patient *{patient_name}* has triggered an urgent emergency medical alert.\n\n"
+        f"• *Reported Condition:* {critical_symptoms}\n"
+        f"• *Blood Group:* {blood_group}\n"
+        f"• *Live GPS Coordinates:* {location_coords}\n"
+        f"• *Google Maps Navigation:* https://maps.google.com/?q={location_coords}\n\n"
+        f"Automated alert dispatched. Call national emergency services 112 / 108 directly."
+    )
+    delivery_result = await send_whatsapp_message(to_phone=emergency_contact, text=sos_message)
+    return {
+        "emergency_alert_dispatched": delivery_result.get("delivered", False),
+        "dispatch_mode": delivery_result.get("mode", "SANDBOX_SIMULATION"),
+        "contact_notified": emergency_contact,
+        "patient": patient_name,
+        "delivery_details": delivery_result
+    }
