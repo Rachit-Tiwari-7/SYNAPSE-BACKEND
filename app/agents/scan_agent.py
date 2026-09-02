@@ -10,7 +10,10 @@ import base64
 import logging
 from typing import Dict, Any, List, Optional
 from PIL import Image
-import numpy as np
+try:
+    import numpy as np
+except ImportError:
+    np = None
 from backend.app.core.state import SynapseOSState, AgentTraceStep
 
 logger = logging.getLogger(__name__)
