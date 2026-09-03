@@ -6,7 +6,7 @@ Interactive Menu Engine, FSM, and Multi-Agent Dispatcher.
 
 import base64
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 from backend.app.services.meta_whatsapp_client import (
     send_whatsapp_message,
@@ -291,101 +291,277 @@ def detect_language_script(text: str) -> str:
 import re
 
 
+def strip_markdown_to_plain_text(text: str) -> str:
+    """Converts markdown text to clean, readable normal text without markdown asterisks, hashes, or syntax."""
+    if not text:
+        return ""
+    # 1. Clean code blocks and inline code ticks
+    s = re.sub(r'```[a-zA-Z]*\n?', '', text)
+    s = s.replace('```', '').replace('`', '')
+    # 2. Normalize markdown headers (#, ##, ###, ####)
+    s = re.sub(r'^[#]+\s*', '', s, flags=re.MULTILINE)
+    # 3. Remove horizontal lines (---, ===, ***)
+    s = re.sub(r'^[-=*]{3,}\s*$', '', s, flags=re.MULTILINE)
+    # 4. Normalize list bullets (* item or - item -> • item)
+    s = re.sub(r'^\s*[-*]\s+', '• ', s, flags=re.MULTILINE)
+    # 5. Remove bold and italic markers (* and _)
+    s = s.replace('**', '').replace('*', '').replace('__', '').replace('_', '')
+    # 6. Normalize multiple consecutive newlines
+    s = re.sub(r'\n{3,}', '\n\n', s)
+    return s.strip()
+
+
+_IGNORED_DIAGNOSIS_SUBSTRINGS = [
+    "triage & outbreak", "specialist findings", "clinical rationale",
+    "drug safety", "ai council", "immediate action", "what to expect",
+    "assessment & findings", "clinical assessment", "audit finding",
+    "disclaimer", "patient status", "vitals to monitor", "safety protocol",
+    "status: consensus reached", "findings"
+]
+
+_INDIAN_RELIEF_DATABASE = [
+    {
+        "keywords": ["fever", "pyrexia", "temperature", "body ache", "headache"],
+        "primary": "• Dolo 650 / Crocin (Paracetamol 650mg): 1 tab after meals (with water) for fever/pain (max 3/day).",
+        "secondary": "• Electral ORS: 1 sachet dissolved in 1L water; sip throughout day for hydration."
+    },
+    {
+        "keywords": ["vomit", "nausea", "dehydrat", "loose motion", "diarrhea", "stool", "gastric"],
+        "primary": "• Electral ORS: 1 packet in 1L clean drinking water; sip slowly after every episode.",
+        "secondary": "• Pan-D (Pantoprazole + Domperidone): 1 cap 30 min before breakfast (empty stomach) for nausea/acidity."
+    },
+    {
+        "keywords": ["acid", "heartburn", "reflux", "stomach burn", "indigestion", "gerd"],
+        "primary": "• Pan-40 / Pantocid (Pantoprazole 40mg): 1 tab 30 min before breakfast on empty stomach.",
+        "secondary": "• Gelusil / Digene gel: 2 tsp liquid after meals as needed."
+    },
+    {
+        "keywords": ["cold", "sneeze", "runny nose", "congestion", "throat", "cough", "rhinitis"],
+        "primary": "• Cetirizine 10mg (Cetzine / Okacet): 1 tab at bedtime after food for runny nose/sneezes.",
+        "secondary": "• Warm saline gargles & steam: 3 times daily; lozenges (Strepsils) after meals."
+    }
+]
+
+def _clean_card_text(s: str) -> str:
+    s = re.sub(r'[*_#`]', '', s)
+    s = re.sub(r'^[•\-\d\.\s]+', '', s)
+    return s.strip()
+
+def _truncate_clean(text: str, max_len: int = 100) -> str:
+    if len(text) <= max_len:
+        return text
+    truncated = text[:max_len].rsplit(' ', 1)[0]
+    return truncated.rstrip(' ,;:-') + '...'
+
+def _extract_diagnosis_condition(text: str) -> str:
+    # 1. Match explicit Risk Profile / Diagnosis / Suspected Condition with markdown resilience
+    m = re.search(
+        r'(?:\*\*|\*|•|\-)?\s*(?:Risk Profile|Suspected (?:Condition|Diagnosis|Infection)|Primary Diagnosis|Diagnosis)\s*(?:\*\*|\*)?\s*[:\-]\s*([^\n]+)',
+        text,
+        re.IGNORECASE
+    )
+    if m:
+        val = _clean_card_text(m.group(1))
+        if '.' in val:
+            val = val.split('.')[0].strip()
+        if not any(ign in val.lower() for ign in _IGNORED_DIAGNOSIS_SUBSTRINGS) and len(val) > 4:
+            return val
+
+    # 2. Match Executive Summary & Suspected Diagnosis section
+    m_exec_sec = re.search(r'(?:Executive Summary & Suspected Diagnosis|Suspected Diagnosis)[^\n]*\n+([^\n]+)', text, re.IGNORECASE)
+    if m_exec_sec:
+        val = _clean_card_text(m_exec_sec.group(1))
+        if '.' in val:
+            val = val.split('.')[0].strip()
+        if not any(ign in val.lower() for ign in _IGNORED_DIAGNOSIS_SUBSTRINGS) and len(val) > 4:
+            m_cond = re.search(r'(?:consistent with|indicative of|suggestive of|including|risk for)\s+([^.\n]+)', val, re.IGNORECASE)
+            if m_cond:
+                return _clean_card_text(m_cond.group(1))
+            return val
+
+    # 3. Match within Executive Summary text
+    exec_m = re.search(r'(?:Executive Summary|Summary)[^\n]*\n+([^\n]+(?:\n[^\n]+)?)', text, re.IGNORECASE)
+    if exec_m:
+        exec_text = exec_m.group(1)
+        m_cond = re.search(r'(?:consistent with|indicative of|suggestive of|including|risk for)\s+([^.\n]+)', exec_text, re.IGNORECASE)
+        if m_cond:
+            c = _clean_card_text(m_cond.group(1))
+            if len(c) > 4 and not any(ign in c.lower() for ign in _IGNORED_DIAGNOSIS_SUBSTRINGS):
+                return c
+        first_sentence = _clean_card_text(exec_text.split('.')[0])
+        if len(first_sentence) > 10 and not any(ign in first_sentence.lower() for ign in _IGNORED_DIAGNOSIS_SUBSTRINGS):
+            return first_sentence
+
+    # 4. Fallback on Critical Flags Detected
+    m_flags = re.search(r'Critical Flags Detected:\*?\s*([^\n]+)', text, re.IGNORECASE)
+    if m_flags:
+        flags = _clean_card_text(m_flags.group(1))
+        return f"Acute Clinical Presentation ({flags})"
+
+    return "Multi-agent clinical audit completed by AI Council."
+
+def _extract_medications_guidance(text: str, is_emergency: bool) -> List[str]:
+    meds: List[str] = []
+    text_lower = text.lower()
+
+    # Check for explicit medical prohibition / withholding rule (e.g., in CNS or surgical emergency)
+    if re.search(r'(?:do not self-medicate|strictly avoid|withhold(?:ing)?\s+symptomatic relief|avoid taking|withhold self-medication)', text_lower):
+        meds.append("• ⚠️ Withhold self-medication: Do not take painkillers or anti-emetics (masks neurological & abdominal signs).")
+        meds.append("• At Hospital: IV fluids & targeted emergency medications will be administered.")
+        return meds
+
+    # Check if text contains structured Indian medicine section
+    med_sec = re.search(
+        r'(?:Recommended Medications & Relief \(India\)|Medications & Symptom Relief \(India\)|Medications & Relief|Medications|Drug Safety)[^\n]*\n+([\s\S]*?)(?=\n\n|\n\*[0-9]|\n[#*•]{1,3}\s+[A-Z]|\Z)',
+        text,
+        re.IGNORECASE
+    )
+    if med_sec:
+        lines = med_sec.group(1).split('\n')
+        for l in lines:
+            cl = _clean_card_text(l)
+            if len(cl) > 12 and any(term in cl.lower() for term in ["dolo", "crocin", "paracetamol", "electral", "ors", "cetzine", "pan", "pantoprazole", "tablet", "tab", "mg", "gargle"]):
+                meds.append(f"• {cl}")
+                if len(meds) >= 2:
+                    break
+
+    if meds:
+        return meds
+
+    # Fallback to Indian OTC relief database based on symptoms in text
+    for entry in _INDIAN_RELIEF_DATABASE:
+        if any(k in text_lower for k in entry["keywords"]):
+            meds.append(entry["primary"])
+            if entry.get("secondary"):
+                meds.append(entry["secondary"])
+            break
+
+    if not meds:
+        if is_emergency:
+            meds.append("• ⚠️ Withhold oral medicines until in-person doctor examination.")
+            meds.append("• Hospital team will establish immediate IV access & therapy.")
+        else:
+            meds.append("• Dolo 650 (Paracetamol 650mg): 1 tab after meals (with water) for fever/pain (max 3/day).")
+            meds.append("• Electral ORS: Sip for hydration; consult doctor before taking antibiotics.")
+
+    return meds[:2]
+
+
 def format_compact_whatsapp_card(text: str) -> str:
     """
-    Transforms verbose multi-agent diagnostic audit into a punchy, mobile-optimized WhatsApp card.
-    Extracts: Triage Badge, Suspected Condition, Top 3 Actions, Red Flags, and Quick Shortcuts.
+    Transforms verbose multi-agent diagnostic audit into a punchy, normal plain-text WhatsApp card (no markdown).
+    Extracts: Triage Badge, Suspected Diagnosis, Council Consensus, Top 2 Actions, Medications & Relief (India), Red Flags, and Quick Shortcuts.
     """
     if not text or len(text.strip()) < 180:
         return format_response_for_whatsapp(text, compact=False)
 
-    # 1. Determine Triage Status Badge
-    badge = "🟡 *SANJEEVNI CLINICAL ASSESSMENT*"
-    if "🔴" in text or ("emergency" in text.lower() and "immediate emergency" in text.lower()):
-        badge = "🔴 *SANJEEVNI EMERGENCY TRIAGE — CRITICAL*"
-    elif "🟢" in text or ("home care" in text.lower() and "doctor consultation needed" not in text.lower()):
-        badge = "🟢 *SANJEEVNI HOME CARE & MONITORING*"
-    elif "🟡" in text or "doctor consult" in text.lower():
-        badge = "🟡 *SANJEEVNI DOCTOR CONSULTATION RECOMMENDED*"
+    # 1. Determine Triage Status Badge (Normal Text, No Markdown)
+    text_lower = text.lower()
+    is_emergency = False
+    badge = "🟡 SANJEEVNI CLINICAL ASSESSMENT"
+    if "🔴" in text or "patient status: emergency" in text_lower or "emergency care" in text_lower or "emergency triage" in text_lower:
+        badge = "🔴 SANJEEVNI EMERGENCY TRIAGE — CRITICAL"
+        is_emergency = True
+    elif "🟢" in text or "patient status: home care" in text_lower or "home self-care" in text_lower or ("home care" in text_lower and "doctor consult" not in text_lower):
+        badge = "🟢 SANJEEVNI HOME CARE & MONITORING"
+    elif "🟡" in text or "doctor consult" in text_lower:
+        badge = "🟡 SANJEEVNI DOCTOR CONSULTATION RECOMMENDED"
+    elif "emergency" in text_lower and any(k in text_lower for k in ["emergency room", "emergency department", "call 112", "call 108"]):
+        badge = "🔴 SANJEEVNI EMERGENCY TRIAGE — CRITICAL"
+        is_emergency = True
 
     lines = [f"{badge}\n━━━━━━━━━━━━━━━━━━━━"]
 
-    # 2. Extract Primary Assessment / Suspected Condition
-    assess_match = re.search(r'(?:Executive Clinical Assessment|Assessment|Findings)[^\n]*\n+([^\n]+)', text, re.IGNORECASE)
-    if assess_match:
-        condition = assess_match.group(1).strip().replace("*", "")
-        if len(condition) > 160:
-            condition = condition[:157] + "..."
-        lines.append(f"• *Assessment:* {condition}")
-    else:
-        lines.append("• *Assessment:* Multi-agent clinical audit completed by AI Council.")
+    # 2. Suspected Diagnosis
+    condition = _extract_diagnosis_condition(text)
+    condition = _truncate_clean(condition, 110)
+    lines.append(f"🩺 Suspected Diagnosis: {condition}")
 
     # Extract Council confidence
-    conf_match = re.search(r'Confidence:\*?\s*([0-9]+%|\w+)', text, re.IGNORECASE)
+    conf_match = (
+        re.search(r'([0-9]{1,3}%)\s*(?:Consensus|Confidence|Agreement)', text, re.IGNORECASE) or
+        re.search(r'(?:Confidence|Consensus|Agreement)[:\-]?\*?\s*([0-9]{1,3}%)', text, re.IGNORECASE) or
+        re.search(r'Confidence:\*?\s*(\w+)', text, re.IGNORECASE)
+    )
     if conf_match:
-        lines.append(f"• *Council Consensus:* {conf_match.group(1)} Confidence")
+        lines.append(f"📊 Council Consensus: {conf_match.group(1)} Agreement")
 
-    # 3. Extract Immediate Action Items
+    # 3. Immediate Actions (Max 2 concise steps)
     actions = []
-    action_match = re.search(r'(?:Immediate Action Plan|Action Plan|Recommended Action)[^\n]*\n+([^\n]+)', text, re.IGNORECASE)
-    if action_match:
-        act_line = action_match.group(1).strip().replace("*", "")
-        if len(act_line) > 8 and not act_line.startswith("---"):
-            actions.append(act_line)
-
     bullet_items = re.findall(r'\*\s+\*?([A-Za-z\s]+)[:\-]\*?\s*([^\n]+)', text)
     for title, desc in bullet_items:
-        clean_title = title.strip().lower()
-        if any(k in clean_title for k in ["hydration", "rest", "temperature", "fluid", "monitoring", "medication", "seek"]):
-            actions.append(f"{title.strip()}: {desc.strip()[:80]}")
-            if len(actions) >= 3:
+        clean_title = title.strip()
+        if any(k in clean_title.lower() for k in ["seek", "emergency", "care", "rest", "hydration", "neck", "consult"]):
+            clean_d = _clean_card_text(desc)
+            clean_d = _truncate_clean(clean_d, 95)
+            actions.append(f"{clean_title}: {clean_d}")
+            if len(actions) >= 2:
                 break
 
+    if not actions:
+        action_match = re.search(r'(?:Immediate Action Plan|Action Plan)[^\n]*\n+([^\n]+)', text, re.IGNORECASE)
+        if action_match:
+            act_line = _clean_card_text(action_match.group(1))
+            if len(act_line) > 8:
+                actions.append(_truncate_clean(act_line, 95))
+
     if actions:
-        lines.append("\n📋 *Immediate Actions:*")
-        for i, act in enumerate(actions[:3], 1):
+        lines.append("\n📋 Immediate Actions:")
+        for i, act in enumerate(actions[:2], 1):
             lines.append(f"{i}. {act}")
     else:
-        lines.append("\n📋 *Immediate Actions:*\n1. Schedule consultation with a Primary Care Physician within 24h.\n2. Maintain complete rest and active hydration.")
+        if is_emergency:
+            lines.append("\n📋 Immediate Actions:\n1. Call 112 / 108 or proceed to nearest hospital emergency immediately.\n2. Do not drive yourself; have a companion accompany you.")
+        else:
+            lines.append("\n📋 Immediate Actions:\n1. Schedule consultation with a General Physician within 24–48 hours.\n2. Maintain complete rest and active fluid hydration.")
 
-    # 4. Extract Top Red Flags
+    # 4. Medications & Relief Available in India (with how to take)
+    meds = _extract_medications_guidance(text, is_emergency)
+    lines.append("\n💊 Medications & Relief (India):")
+    for m_line in meds:
+        lines.append(m_line)
+
+    # 5. Red Flags
     red_flags = []
     for title, desc in bullet_items:
-        clean_title = title.strip().lower()
-        if any(k in clean_title for k in ["respiratory", "breath", "chest", "oxygen", "spo2", "neurological", "escalation", "fever"]):
-            red_flags.append(f"{title.strip()}: {desc.strip()[:70]}")
+        clean_title = title.strip()
+        if any(k in clean_title.lower() for k in ["respiratory", "breath", "chest", "oxygen", "spo2", "neurological", "neck", "fever"]):
+            clean_d = _clean_card_text(desc)
+            clean_d = _truncate_clean(clean_d, 80)
+            red_flags.append(f"{clean_title}: {clean_d}")
             if len(red_flags) >= 2:
                 break
 
     if red_flags:
-        lines.append("\n🚨 *Seek Emergency Care / Call 108 If:*")
+        lines.append("\n🚨 Seek Emergency Care / Call 108 If:")
         for rf in red_flags:
             lines.append(f"• {rf}")
     else:
-        lines.append("\n🚨 *Seek Emergency Care If:*\n• Shortness of breath or SpO2 drops below 92%\n• Severe chest pain or persistent fever > 103°F")
+        lines.append("\n🚨 Seek Emergency Care If:\n• Shortness of breath, SpO2 < 92%, neck stiffness, or fever > 103°F")
 
-    # 5. Interactive Quick Action Buttons / Shortcuts
+    # 6. Interactive Quick Action Buttons / Shortcuts (Normal Text, No Markdown)
     lines.append("\n━━━━━━━━━━━━━━━━━━━━")
-    lines.append("👉 *Quick Shortcuts:*")
-    lines.append("• Reply *5* to find PM-JAY doctors & book slot")
-    lines.append("• Reply *sos* for instant emergency ambulance")
-    lines.append("• Reply *full* for the complete clinical report")
-    lines.append("\n_🌿 Powered by Sanjeevni-OS Multi-Agent Swarm_")
+    lines.append("👉 Quick Shortcuts:")
+    lines.append("• Reply 5 to find PM-JAY doctors & book slot")
+    lines.append("• Reply sos for instant emergency ambulance (108)")
+    lines.append("• Reply full for the complete clinical report")
+    lines.append("\n🌿 Powered by Sanjeevni-OS Multi-Agent Swarm")
 
-    return "\n".join(lines)
+    card_str = "\n".join(lines)
+    return strip_markdown_to_plain_text(card_str)
 
 
 def format_response_for_whatsapp(text: str, compact: bool = True) -> str:
-    """Formats markdown response cleanly for WhatsApp client rendering."""
+    """Formats clinical response as clean, normal plain text without markdown for WhatsApp."""
     if not text:
         return "Thank you for consulting Sanjeevni-OS. Please monitor your health and consult a physician if needed."
     if compact and len(text.strip()) > 280:
         return format_compact_whatsapp_card(text)
-    formatted = text.strip()
-    formatted = formatted.replace("### ", "• *").replace("## ", "*").replace("# ", "*")
-    if not formatted.endswith("\n\n_🌿 Powered by Sanjeevni-OS Multi-Agent Swarm_"):
-        formatted += "\n\n_🌿 Powered by Sanjeevni-OS Multi-Agent Swarm_"
-    return formatted
+    plain = strip_markdown_to_plain_text(text)
+    footer = "🌿 Powered by Sanjeevni-OS Multi-Agent Swarm"
+    if not plain.endswith(footer):
+        plain += f"\n\n{footer}"
+    return plain
 
 
 # =========================================================
@@ -602,9 +778,10 @@ async def process_whatsapp_inbound_webhook(payload: Dict[str, Any]) -> Dict[str,
     if text_lower in ("full", "report", "details", "full report", "detailed report", "audit"):
         last_report = session["context"].get("last_full_report")
         if last_report:
-            clean_full = last_report.strip().replace("### ", "• *").replace("## ", "*").replace("# ", "*")
-            if not clean_full.endswith("\n\n_🌿 Powered by Sanjeevni-OS Multi-Agent Swarm_"):
-                clean_full += "\n\n_🌿 Powered by Sanjeevni-OS Multi-Agent Swarm_"
+            clean_full = strip_markdown_to_plain_text(last_report)
+            footer = "🌿 Powered by Sanjeevni-OS Multi-Agent Swarm"
+            if not clean_full.endswith(footer):
+                clean_full += f"\n\n{footer}"
             dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=clean_full)
             return {
                 "status": "processed",

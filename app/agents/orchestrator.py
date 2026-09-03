@@ -125,10 +125,23 @@ async def orchestrate_health_request(
     # 4. Synthesize Final Consolidated Response via LLM (Groq / OpenRouter)
     synth_start = time.time()
     system_prompt = (
-        "You are the central Chief Medical AI Officer of Sanjeevni-OS / SynapseOS. "
+        "You are the central Chief Medical AI Officer of Sanjeevni-OS / SynapseOS (India's national multi-agent clinical health platform). "
         "Consolidate the findings from specialist agents (Vaccination, Rural Preventive Health, Outbreak Alerts, Triage, Drug Safety, Imaging, Mental Health, and AI Council) "
-        "into an elegant, highly clear, structured, compassionate, and actionable clinical summary. "
-        "Use markdown formatting with bold headings and bullet points. Never provide arbitrary diagnoses; provide safe public health & triage guidance."
+        "into an elegant, highly clear, structured, compassionate, and actionable clinical summary in markdown.\n\n"
+        "Ensure your response includes these distinct numbered sections:\n"
+        "*1. Executive Summary & Suspected Diagnosis\n"
+        "Explicitly state the primary clinical impression or suspected diagnosis in the first sentence.\n\n"
+        "*2. Immediate Action Plan\n"
+        "Provide 2-3 prioritized, actionable steps.\n\n"
+        "*3. Recommended Medications & Relief (India)\n"
+        "Provide safe, commonly available Indian generic and OTC brand equivalents (e.g. Dolo 650, Crocin, Electral ORS, Pan-D, Cetzine) "
+        "with explicit instructions on how to take them (e.g., '1 tablet after meals with water', '30 minutes before breakfast on empty stomach'). "
+        "CRITICAL SAFETY RULE: If this is an acute medical emergency (such as suspected meningitis, CNS infection, appendicitis, acute abdomen, or myocardial infarction), "
+        "strictly instruct: 'Do Not Self-Medicate: Withhold pain/fever/anti-emetic pills until doctor evaluation to avoid masking critical signs; hospital ED will administer immediate IV fluids and targeted therapy.'\n\n"
+        "*4. Specialist Findings & AI Council Consensus\n"
+        "Include consensus percentage and clinical rationale.\n\n"
+        "*5. Critical Red Flags & Hospital Protocols\n"
+        "List emergency warning symptoms that warrant immediate 112 / 108 hospital arrival."
     )
     
     agent_findings_context = f"""
@@ -182,6 +195,12 @@ AI Council Verification: {state.verification}
             parts.append(f"{state.triage_data.get('recommended_action')}")
             if state.triage_data.get("recommended_specialist"):
                 parts.append(f"• **Recommended Care:** {state.triage_data['recommended_specialist']}")
+
+            t_level = state.triage_data.get("triage_level", "HOME_CARE")
+            if t_level == "EMERGENCY_CARE":
+                parts.append("\n**💊 Medications & Relief (India):**\n• ⚠️ *Strictly Withhold Self-Medication:* Do not take painkillers or anti-emetics before hospital examination (masks neurological & abdominal signs).\n• *At Hospital:* IV fluids and emergency targeted therapy will be administered.")
+            else:
+                parts.append("\n**💊 Medications & Relief (India):**\n• *Dolo 650 (Paracetamol 650mg):* 1 tablet after meals (with water) for fever/pain (max 3/day).\n• *Electral ORS:* 1 packet in 1L clean drinking water; sip throughout the day for active hydration.\n• *Pan-40 (Pantoprazole):* 1 tablet 30 minutes before breakfast on empty stomach if gastric acidity occurs.")
 
         if state.drug_check and state.drug_check.get("detected_medications"):
             meds = ", ".join(state.drug_check["detected_medications"])

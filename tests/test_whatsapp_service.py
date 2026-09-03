@@ -9,6 +9,7 @@ from backend.app.services.whatsapp_service import (
     process_whatsapp_inbound_webhook,
     MAIN_MENU_TEXT,
     format_response_for_whatsapp,
+    format_compact_whatsapp_card,
     trigger_emergency_sos_whatsapp
 )
 from backend.app.core.session_manager import session_manager
@@ -189,3 +190,146 @@ async def test_emergency_sos_direct_dispatch():
     )
     assert res["emergency_alert_dispatched"] is True
     assert res["contact_notified"] == "+919876543210"
+
+
+def test_compact_whatsapp_card_emergency_triage_clean_diagnosis_and_indian_meds():
+    """
+    Verifies that the emergency triage short message:
+    1. Extracts real diagnosis (e.g. Meningitis/Encephalitis) without leaking '### 🩺 Triage & Outbreak Assessment'.
+    2. Includes Indian medication guidance with clear safety protocol against self-medication.
+    3. Stays compact and contains quick shortcuts (5, sos, full).
+    """
+    sample_emergency_audit = """*🚨 Critical Clinical Summary: Immediate Emergency Action Required
+
+**Patient Status:** 🔴 **EMERGENCY CARE (IMMEDIATE)**
+**AI Council Confidence:** 98% Consensus | **Safety Protocol:** Strict Adherence to CNS Infection Triage Guidelines
+
+*1. Executive Summary
+Your reported symptoms—**fever, headache, and continuous vomiting**—constitute a **medical emergency**. This specific combination is a critical red flag for potentially life-threatening conditions, including **meningitis**, **encephalitis**, or severe dehydration with electrolyte imbalance.
+
+**Do not wait. Do not drive yourself.** You require immediate professional medical evaluation to rule out central nervous system infections and metabolic crises.
+
+*2. Immediate Action Plan
+*   **Seek Emergency Care Now:** Call emergency services (e.g., 911/112) or have a companion take you to the nearest Emergency Department immediately.
+*   **Do Not Self-Medicate:** **Strictly avoid** taking anti-emetics (anti-vomiting drugs), pain relievers (like paracetamol/ibuprofen), or fever reducers until evaluated by a doctor. These medications can mask critical neurological signs (such as neck stiffness) and delay accurate diagnosis.
+*   **Hydration Caution:** If you are unable to keep fluids down, you are at high risk for rapid dehydration.
+*   **Neck Stiffness Check:** While waiting for help, gently try to touch your chin to your chest.
+
+*3. Clinical Rationale & Specialist Findings
+
+• *🩺 Triage & Outbreak Assessment
+*   **Critical Flags Detected:** Continuous vomiting, Fever, Headache.
+*   **Risk Profile:** High risk for **Meningitis** or **Encephalitis**.
+
+• *💊 Drug Safety & Pharmacology
+*   **Current Medications:** None reported.
+*   **Safety Note:** The AI Council confirms that withholding symptomatic relief is a **critical safety measure**.
+
+• *🧠 AI Council Verification
+*   **Status:** **CONSENSUS REACHED** (98% Confidence).
+*   **Verdict:** The council unanimously supports the emergency triage.
+"""
+    card = format_compact_whatsapp_card(sample_emergency_audit)
+
+    # 1. Verify No markdown heading leak and NO markdown syntax
+    assert "###" not in card
+    assert "*" not in card
+    assert "_" not in card
+
+    # 2. Verify Diagnosis extraction (Normal plain text)
+    assert "🩺 Suspected Diagnosis:" in card
+    assert any(term in card for term in ["Meningitis", "Encephalitis"])
+
+    # 3. Verify Council consensus percentage
+    assert "98%" in card
+
+    # 4. Verify Indian Medication guidance with safety protocol
+    assert "💊 Medications & Relief (India):" in card
+    assert "Withhold self-medication" in card
+
+    # 5. Verify Quick Shortcuts in normal text
+    assert "Reply 5" in card
+    assert "Reply sos" in card
+    assert "Reply full" in card
+
+    # 6. Verify Compact length (does not overflow chat)
+    assert len(card) < 1150
+
+
+def test_compact_whatsapp_card_homecare_indian_meds_and_instructions():
+    """
+    Verifies that for home care / mild illness, the short card includes:
+    1. Clean normal text without markdown syntax (*, _, #).
+    2. Real diagnosis.
+    3. Indian OTC medicines (Dolo 650, Electral ORS) with specific eating/dosing instructions.
+    4. Compact length.
+    """
+    sample_homecare_audit = """**🌿 Clinical Assessment & Care Guidance**
+
+**Patient Status:** 🟢 **HOME CARE & MONITORING**
+**AI Council Confidence:** 96% Agreement | **Safety Protocol:** Standard Upper Respiratory & Viral Care
+
+*1. Executive Summary & Suspected Diagnosis
+Your reported symptoms of runny nose, mild sore throat, and low-grade fever are consistent with **Acute Upper Respiratory Viral Infection (Common Cold)**. No emergency red flags detected.
+
+*2. Immediate Action Plan
+*   **Active Hydration:** Drink at least 2.5–3 liters of warm water, clear broths, and electrolyte fluids daily.
+*   **Adequate Rest:** Prioritize 8+ hours of sleep and avoid strenuous physical exertion.
+
+*3. Recommended Medications & Relief (India)
+*   **Dolo 650 / Calpol (Paracetamol 650mg):** 1 tablet after meals (with water) every 6–8 hours as needed for fever or headache. Max 3 tablets/24h.
+*   **Electral ORS:** 1 sachet dissolved in 1 liter clean water; sip throughout the day to sustain hydration.
+*   **Cetzine / Okacet (Cetirizine 10mg):** 1 tablet at night after dinner if runny nose or sneezing disturbs sleep.
+"""
+    card = format_compact_whatsapp_card(sample_homecare_audit)
+
+    # 1. Verify Status & Diagnosis in clean normal text (no markdown)
+    assert "*" not in card
+    assert "_" not in card
+    assert "🟢 SANJEEVNI HOME CARE & MONITORING" in card
+    assert "🩺 Suspected Diagnosis: Acute Upper Respiratory Viral Infection" in card
+
+    # 2. Verify Indian Medications & Administration (how to eat/take)
+    assert "💊 Medications & Relief (India):" in card
+    assert "Dolo 650" in card
+    assert "after meals" in card or "after food" in card
+    assert "Electral ORS" in card
+
+    # 3. Verify Shortcuts and length
+    assert "Reply 5" in card
+    assert "Reply full" in card
+    assert len(card) < 1150
+
+
+def test_compact_whatsapp_card_from_plain_unformatted_input():
+    """
+    Verifies that format_compact_whatsapp_card gracefully parses normal plain text
+    without any markdown formatting and outputs clean normal text.
+    """
+    plain_input = """SANJEEVNI EMERGENCY CLINICAL ASSESSMENT
+Patient Status: EMERGENCY CARE (IMMEDIATE)
+Council Confidence: 99% Consensus
+
+Executive Summary:
+The patient has acute fever, severe persistent headache, and recurrent vomiting, representing a critical presentation.
+
+Risk Profile: High risk for Meningitis or Acute Neurological Infection.
+
+Immediate Action Plan:
+1. Seek Emergency Care Now: Transport patient immediately to hospital emergency.
+2. Do not self-medicate: Strictly avoid oral painkillers or anti-emetics before physician assessment.
+"""
+    card = format_compact_whatsapp_card(plain_input)
+    assert "*" not in card
+    assert "_" not in card
+    assert "#" not in card
+    assert "🔴 SANJEEVNI EMERGENCY TRIAGE — CRITICAL" in card
+    assert "🩺 Suspected Diagnosis:" in card
+    assert any(term in card for term in ["Meningitis", "Neurological"])
+    assert "💊 Medications & Relief (India):" in card
+    assert "Withhold self-medication" in card
+    assert "Reply 5" in card
+    assert "Reply full" in card
+    assert len(card) < 1150
+
+

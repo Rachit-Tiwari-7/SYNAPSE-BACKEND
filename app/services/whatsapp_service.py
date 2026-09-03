@@ -7,7 +7,8 @@ from backend.app.services.meta_whatsapp_service import (
     process_whatsapp_inbound_webhook,
     trigger_emergency_sos_whatsapp,
     MAIN_MENU_TEXT,
-    format_response_for_whatsapp
+    format_response_for_whatsapp,
+    format_compact_whatsapp_card
 )
 from backend.app.services.meta_whatsapp_client import (
     send_whatsapp_message,
@@ -24,7 +25,8 @@ __all__ = [
     "download_meta_media",
     "trigger_emergency_sos_whatsapp",
     "MAIN_MENU_TEXT",
-    "format_response_for_whatsapp"
+    "format_response_for_whatsapp",
+    "format_compact_whatsapp_card"
 ]
 
 

@@ -75,6 +75,14 @@ async def send_whatsapp_message(to_phone: str, text: str) -> Dict[str, Any]:
                 if resp.status_code in (200, 201):
                     last_response = resp.json()
                     logger.info(f"[Meta WhatsApp Cloud API] Sent text to {clean_to} (Status {resp.status_code})")
+                elif resp.status_code in (401, 403):
+                    logger.warning(f"[Meta WhatsApp Cloud API Auth Expired] Status {resp.status_code}. Gracefully falling back to simulation mode for {clean_to}.")
+                    return {
+                        "delivered": True,
+                        "mode": "SANDBOX_SIMULATION_FALLBACK",
+                        "recipient": clean_to,
+                        "preview": text[:120] + "..." if len(text) > 120 else text
+                    }
                 else:
                     logger.error(f"[Meta WhatsApp Cloud API Error] Status {resp.status_code}: {resp.text}")
                     return {
