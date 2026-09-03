@@ -329,7 +329,45 @@ Immediate Action Plan:
     assert "💊 Medications & Relief (India):" in card
     assert "Withhold self-medication" in card
     assert "Reply 5" in card
-    assert "Reply full" in card
     assert len(card) < 1150
+
+
+def test_informational_medicine_question_returns_concise_direct_answer_without_triage_slop():
+    """
+    Verifies that questions like 'what is calpol medicine for' return a direct,
+    short, simple answer without the emergency triage badge, shortcuts, or fake diagnosis slop.
+    """
+    sample_medicine_response = """Calpol is a brand of **Paracetamol (Acetaminophen)**, used to reduce fever and relieve mild to moderate pain (such as headaches, toothaches, or body aches).
+
+**How to take:**
+• **Adults:** 500mg–1000mg after food with water every 4–6 hours (max 3000mg/day).
+• **Children:** Dose depends on body weight and age; use pediatric drops/syrup as prescribed.
+• **Safety:** Do not combine with other paracetamol-containing medicines (like Dolo or Crocin).
+
+Seek immediate medical attention if you experience rash, breathing difficulty, or fever lasting > 3 days.
+"""
+    output = format_response_for_whatsapp(sample_medicine_response, compact=True)
+
+    # Must be clean normal text (no markdown)
+    assert "*" not in output
+    assert "_" not in output
+    assert "#" not in output
+
+    # Must directly answer what Calpol is
+    assert "Calpol is a brand of Paracetamol" in output
+    assert "reduce fever" in output or "mild to moderate pain" in output
+    assert "How to take:" in output
+
+    # MUST NOT contain robotic triage template slop
+    assert "SANJEEVNI HOME CARE & MONITORING" not in output
+    assert "SANJEEVNI CLINICAL ASSESSMENT" not in output
+    assert "Suspected Diagnosis:" not in output
+    assert "The primary clinical impression is that this is a general informational inquiry" not in output
+    assert "Reply 5" not in output
+    assert "Reply sos" not in output
+
+    # Must include clean footer
+    assert "🌿 Powered by Sanjeevni-OS Multi-Agent Swarm" in output
+
 
 

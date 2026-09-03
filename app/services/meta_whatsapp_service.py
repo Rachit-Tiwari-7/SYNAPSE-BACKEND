@@ -316,7 +316,8 @@ _IGNORED_DIAGNOSIS_SUBSTRINGS = [
     "drug safety", "ai council", "immediate action", "what to expect",
     "assessment & findings", "clinical assessment", "audit finding",
     "disclaimer", "patient status", "vitals to monitor", "safety protocol",
-    "status: consensus reached", "findings"
+    "status: consensus reached", "findings", "general informational inquiry",
+    "informational inquiry", "inquiry regarding", "general inquiry", "pharmacological"
 ]
 
 _INDIAN_RELIEF_DATABASE = [
@@ -555,8 +556,21 @@ def format_response_for_whatsapp(text: str, compact: bool = True) -> str:
     """Formats clinical response as clean, normal plain text without markdown for WhatsApp."""
     if not text:
         return "Thank you for consulting Sanjeevni-OS. Please monitor your health and consult a physician if needed."
-    if compact and len(text.strip()) > 280:
+
+    text_lower = text.lower()
+    # Only formal multi-agent diagnostic audits get transformed into compact triage cards
+    is_triage_audit = (
+        any(k in text_lower for k in [
+            "patient status:", "triage level:", "triage & outbreak", 
+            "clinical assessment & care guidance", "symptom triage"
+        ]) or ("🔴" in text and "emergency" in text_lower)
+    ) and not any(k in text_lower for k in [
+        "informational inquiry", "pharmacological", "what is calpol", "brand name for paracetamol"
+    ])
+
+    if compact and is_triage_audit:
         return format_compact_whatsapp_card(text)
+
     plain = strip_markdown_to_plain_text(text)
     footer = "🌿 Powered by Sanjeevni-OS Multi-Agent Swarm"
     if not plain.endswith(footer):
