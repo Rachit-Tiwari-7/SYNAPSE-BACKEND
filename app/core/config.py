@@ -18,6 +18,17 @@ class Settings(BaseModel):
     
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+
+    # Production Medical Prescription OCR (OpenRouter Free Vision Strategy)
+    OPENROUTER_PRIMARY_MODEL: str = os.getenv("OPENROUTER_PRIMARY_MODEL", "google/gemma-4-31b-it:free")
+    OPENROUTER_SECONDARY_MODEL: str = os.getenv("OPENROUTER_SECONDARY_MODEL", "google/gemma-4-26b-a4b-it:free")
+    OPENROUTER_TERTIARY_MODEL: str = os.getenv("OPENROUTER_TERTIARY_MODEL", "nvidia/nemotron-nano-12b-v2-vl:free")
+    OPENROUTER_TIMEOUT_MS: int = int(os.getenv("OPENROUTER_TIMEOUT_MS", "45000"))
+    MAX_PRESCRIPTION_IMAGE_MB: int = int(os.getenv("MAX_PRESCRIPTION_IMAGE_MB", "10"))
+    MAX_IMAGE_DIMENSION: int = int(os.getenv("MAX_IMAGE_DIMENSION", "2048"))
+    OCR_SECOND_PASS_ENABLED: bool = os.getenv("OCR_SECOND_PASS_ENABLED", "false").lower() in ("true", "1", "yes")
+    OPENROUTER_REFERER: str = os.getenv("OPENROUTER_REFERER", "https://synapseos.health")
+    OPENROUTER_APP_TITLE: str = os.getenv("OPENROUTER_APP_TITLE", "SynapseOS Medical OCR")
     
     # Meta Official WhatsApp Cloud API (Graph API) Settings
     WHATSAPP_CLOUD_API_TOKEN: str = os.getenv("WHATSAPP_CLOUD_API_TOKEN", "")

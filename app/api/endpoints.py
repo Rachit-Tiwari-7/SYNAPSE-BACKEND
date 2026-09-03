@@ -3,10 +3,20 @@ SynapseOS — api/endpoints.py
 Unified FastAPI API endpoints for SynapseOS.
 """
 
-from fastapi import APIRouter, HTTPException, Response, Query, Form, UploadFile, File
+from fastapi import APIRouter, HTTPException, Response, Query, Form, UploadFile, File, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
+import base64
 from backend.app.core.config import settings
+from backend.app.services.prescription_ocr_service import (
+    validate_image_bytes,
+    normalize_and_resize_image,
+    run_prescription_ocr,
+    process_prescription_pages,
+    interpret_prescription,
+    format_prescription_for_whatsapp
+)
 
 from backend.app.agents.orchestrator import orchestrate_health_request
 from backend.app.agents.triage_agent import analyze_symptoms
@@ -122,9 +132,214 @@ async def drug_check_endpoint(req: DrugCheckRequest):
     return await evaluate_drug_safety(req.query_or_meds)
 
 
+OCR_ERROR_STATUS_MAP = {
+    "INVALID_IMAGE": 400,
+    "LOW_IMAGE_QUALITY": 400,
+    "IMAGE_TOO_LARGE": 413,
+    "UNSUPPORTED_IMAGE": 415,
+    "OCR_RATE_LIMITED": 429,
+    "OCR_TIMEOUT": 504,
+    "OCR_PROVIDER_ERROR": 502,
+    "OCR_INVALID_RESPONSE": 502,
+    "FREE_MODEL_CONSTRAINT_VIOLATION": 500,
+    "INTERNAL_ERROR": 500
+}
+
+
+@router.post("/prescription/ocr", tags=["Vision AI - Prescription OCR"])
+async def prescription_ocr_endpoint(request: Request):
+    """
+    Production-Ready Medical Prescription OCR Endpoint.
+    Accepts multipart/form-data (image=..., file=..., or files=[...]) or application/json (image_base64=...).
+    Performs conservative visual extraction with uncertainty detection via OpenRouter Free Vision Models.
+    """
+    content_type = request.headers.get("content-type", "")
+    raw_images_bytes: List[bytes] = []
+    enable_second_pass: Optional[bool] = None
+
+    try:
+        if "multipart/form-data" in content_type:
+            form = await request.form()
+            file_objs = form.getlist("files")
+            if not file_objs:
+                single_file = form.get("image") or form.get("file")
+                if single_file:
+                    file_objs = [single_file]
+
+            for f in file_objs:
+                if hasattr(f, "read"):
+                    data = await f.read()
+                    if data:
+                        raw_images_bytes.append(data)
+
+            if "enable_second_pass" in form:
+                sp_val = str(form.get("enable_second_pass", "")).lower()
+                enable_second_pass = sp_val in ("true", "1", "yes")
+
+        elif "application/json" in content_type:
+            body = await request.json()
+            enable_second_pass = body.get("enable_second_pass")
+            b64_list = body.get("images_base64")
+            if not b64_list and body.get("image_base64"):
+                b64_list = [body["image_base64"]]
+
+            if b64_list:
+                for b64 in b64_list:
+                    if isinstance(b64, str):
+                        clean_b64 = b64.split(",")[-1] if "," in b64 else b64
+                        try:
+                            decoded = base64.b64decode(clean_b64)
+                            if decoded:
+                                raw_images_bytes.append(decoded)
+                        except Exception:
+                            return JSONResponse(
+                                status_code=400,
+                                content={
+                                    "success": False,
+                                    "error": {
+                                        "code": "INVALID_IMAGE",
+                                        "message": "Invalid base64 encoded image data.",
+                                        "retryable": False
+                                    }
+                                }
+                            )
+
+        if not raw_images_bytes:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "error": {
+                        "code": "INVALID_IMAGE",
+                        "message": "No prescription image was provided in request.",
+                        "retryable": False
+                    }
+                }
+            )
+
+        ok, err_obj, result_data = await process_prescription_pages(
+            raw_images_bytes,
+            enable_second_pass=enable_second_pass
+        )
+
+        if not ok:
+            err_code = err_obj.get("code", "INTERNAL_ERROR")
+            err_msg = err_obj.get("message", "Unable to process the prescription right now.")
+            retryable = bool(err_obj.get("retryable", False))
+            status_code = OCR_ERROR_STATUS_MAP.get(err_code, 500)
+
+            return JSONResponse(
+                status_code=status_code,
+                content={
+                    "success": False,
+                    "error": {
+                        "code": err_code,
+                        "message": err_msg,
+                        "retryable": retryable
+                    }
+                }
+            )
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success": True,
+                "data": result_data
+            }
+        )
+
+    except Exception:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": {
+                    "code": "INTERNAL_ERROR",
+                    "message": "An unexpected error occurred while processing the prescription.",
+                    "retryable": True
+                }
+            }
+        )
+
+
+class PrescriptionInterpretRequest(BaseModel):
+    prescription_data: Dict[str, Any]
+    lang: Optional[str] = "en"
+
+
+@router.post("/prescription/interpret", tags=["Vision AI - Prescription OCR"])
+async def prescription_interpret_endpoint(req: PrescriptionInterpretRequest):
+    """
+    Downstream Clinical Pharmacology & Triage Layer powered by Groq.
+    Explains likely underlying disease/condition, medication purposes, administration timing,
+    precautionary tips, and emergency red flags.
+    """
+    interpretation = await interpret_prescription(ocr_data=req.prescription_data, lang=req.lang or "en")
+    whatsapp_text = format_prescription_for_whatsapp(ocr_data=req.prescription_data, interpretation=interpretation)
+    return {
+        "success": True,
+        "interpretation": interpretation,
+        "whatsapp_formatted": whatsapp_text
+    }
+
+
 @router.post("/scans/analyze", tags=["Vision AI"])
 async def scan_analysis_endpoint(req: ScanAnalysisRequest):
     """MONAI lesion heatmap localization & plain-language scan/prescription explanation."""
+    modality_lower = (req.image_type or "").lower()
+    if ("prescription" in modality_lower or "rx" in modality_lower) and req.image_base64:
+        clean_b64 = req.image_base64.split(",")[-1] if "," in req.image_base64 else req.image_base64
+        try:
+            raw_bytes = base64.b64decode(clean_b64)
+            valid, err_code, err_msg, pil_img = validate_image_bytes(raw_bytes)
+            if valid and pil_img:
+                data_url = normalize_and_resize_image(pil_img)
+                ok, err_obj, ocr_data = await run_prescription_ocr(data_url)
+                if ok and ocr_data:
+                    findings = []
+                    for m in ocr_data.get("medications", []):
+                        m_name = m.get("name") or m.get("raw_name") or "Uncertain Medication"
+                        str_desc = f"Medication: {m_name}"
+                        if m.get("strength"):
+                            str_desc += f" {m['strength']}"
+                        if m.get("dosage"):
+                            str_desc += f" — {m['dosage']}"
+                        if m.get("frequency"):
+                            str_desc += f" ({m['frequency']})"
+                        if m.get("duration"):
+                            str_desc += f" x {m['duration']}"
+                        if m.get("timing"):
+                            str_desc += f" [{m['timing']}]"
+                        if m.get("is_uncertain"):
+                            str_desc += " [⚠ Needs Verification]"
+                        findings.append(str_desc)
+
+                    if not findings:
+                        findings = ["Prescription processed. No clear medications could be confidently identified."]
+
+                    requires_verif = ocr_data.get("requires_human_verification", True)
+                    return {
+                        "filename": req.filename or "prescription_scan.jpg",
+                        "modality": "prescription",
+                        "ai_diagnosis_summary": "Prescription Processed via OpenRouter Free Vision OCR",
+                        "urgency_badge": "🟡 Human Verification Required" if requires_verif else "🟢 Follow Doctor's Instructions",
+                        "clinical_findings": findings,
+                        "plain_english_explanation": (
+                            "Prescription digitized visually. All detected medication names, strengths, and dosages must be carefully verified by a human against the physical prescription before use."
+                        ),
+                        "visual_bounding_boxes": [],
+                        "has_gradcam_support": False,
+                        "is_synthetic_demonstration": False,
+                        "structured_prescription": ocr_data,
+                        "suggested_questions_for_doctor": [
+                            "Should these medications be taken before or after meals?",
+                            "Are there any potential interactions with OTC supplements?",
+                            "What should I do if a dose is accidentally missed?"
+                        ]
+                    }
+        except Exception:
+            pass
+
     return analyze_medical_image(image_type=req.image_type, filename=req.filename, image_base64=req.image_base64)
 
 
