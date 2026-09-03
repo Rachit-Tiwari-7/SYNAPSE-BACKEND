@@ -10,6 +10,7 @@ from typing import Dict, Any, Optional, List
 
 from backend.app.services.meta_whatsapp_client import (
     send_whatsapp_message,
+    send_whatsapp_image,
     send_whatsapp_interactive_buttons,
     download_meta_media
 )
@@ -717,12 +718,35 @@ async def process_whatsapp_inbound_webhook(payload: Dict[str, Any]) -> Dict[str,
 
         reply_text = strip_markdown_to_plain_text("\n".join(reply_parts))
         dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=reply_text)
+
+        # Dispatch the actual annotated YOLOv8 JPG and Grad-CAM JPG straight into the chat bubble
+        result_img_url = scan_result.get("remote_result_image")
+        gradcam_img_url = scan_result.get("remote_gradcam_image")
+        image_dispatches = []
+
+        if result_img_url:
+            img_res = await send_whatsapp_image(
+                to_phone=sender_phone,
+                image_url=result_img_url,
+                caption="🎯 FractureNet YOLOv8: Anomaly Localization Overlay"
+            )
+            image_dispatches.append({"type": "yolo_overlay", "result": img_res})
+
+        if gradcam_img_url:
+            cam_res = await send_whatsapp_image(
+                to_phone=sender_phone,
+                image_url=gradcam_img_url,
+                caption="🔥 Grad-CAM: Neural Attention Heatmap"
+            )
+            image_dispatches.append({"type": "gradcam_heatmap", "result": cam_res})
+
         return {
             "status": "processed",
             "type": "medical_image",
             "sender": sender_phone,
             "dispatch": dispatch_res,
             "reply_dispatched": dispatch_res,
+            "images_dispatched": image_dispatches,
             "scan_summary": scan_result.get("ai_diagnosis_summary")
         }
 
