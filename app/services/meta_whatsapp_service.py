@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # =========================================================
 
 LANGUAGE_SELECTION_MENU = (
-    "🌿 *Welcome to SANJEEVNI-OS AI Health Assistant* 🌿\n"
+    "🌿 *Welcome to SYNAPSE-OS AI Health Assistant* 🌿\n"
     "_Multi-Agent Clinical Intelligence & Public Health Platform_\n\n"
     "🌐 *Please select your preferred language / अपनी भाषा चुनें:*\n\n"
     "1️⃣ *English* (Default)\n"
@@ -441,16 +441,16 @@ def format_compact_whatsapp_card(text: str) -> str:
     # 1. Determine Triage Status Badge (Normal Text, No Markdown)
     text_lower = text.lower()
     is_emergency = False
-    badge = "🟡 SANJEEVNI CLINICAL ASSESSMENT"
+    badge = "🟡 SYNAPSE-OS CLINICAL ASSESSMENT"
     if "🔴" in text or "patient status: emergency" in text_lower or "emergency care" in text_lower or "emergency triage" in text_lower:
-        badge = "🔴 SANJEEVNI EMERGENCY TRIAGE — CRITICAL"
+        badge = "🔴 SYNAPSE-OS EMERGENCY TRIAGE — CRITICAL"
         is_emergency = True
     elif "🟢" in text or "patient status: home care" in text_lower or "home self-care" in text_lower or ("home care" in text_lower and "doctor consult" not in text_lower):
-        badge = "🟢 SANJEEVNI HOME CARE & MONITORING"
+        badge = "🟢 SYNAPSE-OS HOME CARE & MONITORING"
     elif "🟡" in text or "doctor consult" in text_lower:
-        badge = "🟡 SANJEEVNI DOCTOR CONSULTATION RECOMMENDED"
+        badge = "🟡 SYNAPSE-OS DOCTOR CONSULTATION RECOMMENDED"
     elif "emergency" in text_lower and any(k in text_lower for k in ["emergency room", "emergency department", "call 112", "call 108"]):
-        badge = "🔴 SANJEEVNI EMERGENCY TRIAGE — CRITICAL"
+        badge = "🔴 SYNAPSE-OS EMERGENCY TRIAGE — CRITICAL"
         is_emergency = True
 
     lines = [f"{badge}\n━━━━━━━━━━━━━━━━━━━━"]
@@ -528,7 +528,7 @@ def format_compact_whatsapp_card(text: str) -> str:
     lines.append("• Reply 5 to find PM-JAY doctors & book slot")
     lines.append("• Reply sos for instant emergency ambulance (108)")
     lines.append("• Reply full for the complete clinical report")
-    lines.append("\n🌿 Powered by Sanjeevni-OS Multi-Agent Swarm")
+    lines.append("\n🌿 Powered by Synapse-OS Multi-Agent Swarm")
 
     card_str = "\n".join(lines)
     return strip_markdown_to_plain_text(card_str)
@@ -537,7 +537,7 @@ def format_compact_whatsapp_card(text: str) -> str:
 def format_response_for_whatsapp(text: str, compact: bool = True) -> str:
     """Formats clinical response as clean, normal plain text without markdown for WhatsApp."""
     if not text:
-        return "Thank you for consulting Sanjeevni-OS. Please monitor your health and consult a physician if needed."
+        return "Thank you for consulting Synapse-OS. Please monitor your health and consult a physician if needed."
 
     text_lower = text.lower()
     # Only formal multi-agent diagnostic audits get transformed into compact triage cards
@@ -554,7 +554,7 @@ def format_response_for_whatsapp(text: str, compact: bool = True) -> str:
         return format_compact_whatsapp_card(text)
 
     plain = strip_markdown_to_plain_text(text)
-    footer = "🌿 Powered by Sanjeevni-OS Multi-Agent Swarm"
+    footer = "🌿 Powered by Synapse-OS Multi-Agent Swarm"
     if not plain.endswith(footer):
         plain += f"\n\n{footer}"
     return plain
@@ -668,7 +668,7 @@ async def process_whatsapp_inbound_webhook(payload: Dict[str, Any]) -> Dict[str,
         box_str = f"\n🎯 *Detections:* {len(boxes)} anomaly zone(s) localized." if boxes else "\n✅ *No acute cortical fracture displaced.*"
 
         reply_parts = [
-            "📷 *SANJEEVNI-OS MEDICAL SCAN DIAGNOSTICS* 📷\n",
+            "📷 *SYNAPSE-OS MEDICAL SCAN DIAGNOSTICS* 📷\n",
             f"• *Modality:* {img_type.replace('_', ' ').title()}",
             f"• *AI Diagnosis:* {scan_result.get('ai_diagnosis_summary', 'Analysis Completed')}",
             f"• *Urgency:* {scan_result.get('urgency_badge', 'Standard Review')}",
@@ -745,7 +745,7 @@ async def process_whatsapp_inbound_webhook(payload: Dict[str, Any]) -> Dict[str,
             return {"status": "processed", "type": "language_retry"}
 
     # 7. Greeting / Main Menu Trigger
-    if text_lower in ("hi", "hello", "hey", "menu", "help", "start", "guide", "sanjeevni", "options"):
+    if text_lower in ("hi", "hello", "hey", "menu", "help", "start", "guide", "synapse", "synapseos", "sanjeevni", "options"):
         # If user has not chosen a language yet, prompt with language selection first!
         if not session["context"].get("lang"):
             session_manager.set_flow(sender_phone, "LANG_SELECT")
@@ -775,7 +775,7 @@ async def process_whatsapp_inbound_webhook(payload: Dict[str, Any]) -> Dict[str,
         last_report = session["context"].get("last_full_report")
         if last_report:
             clean_full = strip_markdown_to_plain_text(last_report)
-            footer = "🌿 Powered by Sanjeevni-OS Multi-Agent Swarm"
+            footer = "🌿 Powered by Synapse-OS Multi-Agent Swarm"
             if not clean_full.endswith(footer):
                 clean_full += f"\n\n{footer}"
             dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=clean_full)
@@ -797,7 +797,7 @@ async def process_whatsapp_inbound_webhook(payload: Dict[str, Any]) -> Dict[str,
     # 8. Emergency SOS Trigger
     if text_lower in ("sos", "emergency", "112", "108", "save me", "help me"):
         sos_res = (
-            "🚨 *SANJEEVNI-OS — IMMEDIATE EMERGENCY PROTOCOL ACTIVATED* 🚨\n\n"
+            "🚨 *SYNAPSE-OS — IMMEDIATE EMERGENCY PROTOCOL ACTIVATED* 🚨\n\n"
             "If you or someone nearby is experiencing a life-threatening emergency:\n\n"
             "📞 *National Emergency:* Call `112` directly\n"
             "🚑 *Ambulance Services:* Call `108` immediately\n"
@@ -853,7 +853,7 @@ async def process_whatsapp_inbound_webhook(payload: Dict[str, Any]) -> Dict[str,
             reply_text = "💊 *Drug Safety & RxNav Checker*\nPlease reply with the medication names (e.g. `2 Aspirin and Ibuprofen` or `2 Paracetamol with Alcohol`)."
         else:
             drug_res = await evaluate_drug_safety(query)
-            reply_parts = ["💊 *SANJEEVNI-OS DRUG SAFETY & RXNAV REPORT* 💊\n"]
+            reply_parts = ["💊 *SYNAPSE-OS DRUG SAFETY & RXNAV REPORT* 💊\n"]
             meds = drug_res.get("detected_medications", [])
             if meds:
                 reply_parts.append(f"• *Detected Medications:* {', '.join(meds)}")
@@ -1078,7 +1078,7 @@ async def process_whatsapp_inbound_webhook(payload: Dict[str, Any]) -> Dict[str,
     except Exception as exc:
         logger.error(f"[WhatsApp Swarm Exception] Fallback triggered: {exc}", exc_info=True)
         response_text = (
-            "⚠️ *SANJEEVNI-OS — CLINICAL ASSISTANT NOTICE*\n\n"
+            "⚠️ *SYNAPSE-OS — CLINICAL ASSISTANT NOTICE*\n\n"
             "We encountered a temporary processing delay with our live clinical reasoning nodes. Your symptom query has been safely recorded.\n\n"
             "🚨 *Immediate Emergency Guidance:*\n"
             "If you or the patient are experiencing severe acute symptoms (such as intense chest pain, sudden difficulty breathing, persistent high fever, or loss of consciousness):\n"
@@ -1088,7 +1088,7 @@ async def process_whatsapp_inbound_webhook(payload: Dict[str, Any]) -> Dict[str,
             "• Reply *menu* to view offline guides, doctor directory, and vaccination schedules.\n"
             "• Reply *sos* for instant emergency contact dispatch.\n"
             "• Reply *2 <medicine name>* to verify drug interactions.\n\n"
-            "_🌿 Sanjeevni-OS Active Medical Protection_"
+            "_🌿 SynapseOS Active Medical Protection_"
         )
         trace_steps = 0
         intent = "fallback_emergency_advisory"
@@ -1114,7 +1114,7 @@ async def trigger_emergency_sos_whatsapp(
 ) -> Dict[str, Any]:
     """Dispatches 1-click Emergency SOS alert to pre-set emergency contact via WhatsApp."""
     sos_message = (
-        f"🚨 *SANJEEVNI-OS — EMERGENCY SOS ALERT* 🚨\n\n"
+        f"🚨 *SYNAPSE-OS — EMERGENCY SOS ALERT* 🚨\n\n"
         f"Patient *{patient_name}* has triggered an urgent emergency medical alert.\n\n"
         f"• *Reported Condition:* {critical_symptoms}\n"
         f"• *Blood Group:* {blood_group}\n"

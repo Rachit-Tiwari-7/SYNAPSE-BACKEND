@@ -125,7 +125,7 @@ async def orchestrate_health_request(
     # 4. Synthesize Final Consolidated Response via LLM (Groq / OpenRouter)
     synth_start = time.time()
     system_prompt = (
-        "You are Sanjeevni AI, an intelligent, empathetic, direct medical assistant for Indian healthcare.\n\n"
+        "You are SynapseOS AI, an intelligent, empathetic, direct medical assistant for Indian healthcare.\n\n"
         "STRICT RULES FOR YOUR RESPONSE:\n"
         "1. BE SHORT, SIMPLE, AND TO THE POINT (under 120-150 words). Never use corporate filler, repetitive preamble, or robotic meta-talk (like 'The primary clinical impression is that this is a general informational inquiry...').\n"
         "2. Directly answer the user's specific query in the very first sentence:\n"
