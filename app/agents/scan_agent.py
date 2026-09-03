@@ -27,6 +27,7 @@ def get_fracture_model():
     global _fracture_model
     if _fracture_model is None:
         try:
+            # pyrefly: ignore [missing-import]
             from ultralytics import YOLO
             candidates = [
                 os.path.abspath("backend/Final.pt"),

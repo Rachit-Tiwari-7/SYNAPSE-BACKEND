@@ -707,8 +707,13 @@ async def process_whatsapp_inbound_webhook(payload: Dict[str, Any]) -> Dict[str,
             box_str,
             f"\n📋 *Clinical Interpretation:*\n{scan_result.get('plain_english_explanation', '')}",
             f"\n💡 *Recommended Next Step:*\n{scan_result.get('recommended_clinical_action', 'Consult a registered orthopedic surgeon.')}",
-            "\n_⚠️ AI screening support only. Always verify with a certified radiologist._"
         ]
+        if scan_result.get("remote_result_image"):
+            reply_parts.append(f"\n🖼️ *YOLOv8 Detection Overlay:*\n{scan_result['remote_result_image']}")
+        if scan_result.get("remote_gradcam_image"):
+            reply_parts.append(f"\n🔥 *Grad-CAM Attention Map:*\n{scan_result['remote_gradcam_image']}")
+
+        reply_parts.append("\n_⚠️ AI screening support only. Always verify with a certified radiologist._")
 
         reply_text = strip_markdown_to_plain_text("\n".join(reply_parts))
         dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=reply_text)
