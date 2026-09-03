@@ -29,6 +29,9 @@ class Settings(BaseModel):
     OCR_SECOND_PASS_ENABLED: bool = os.getenv("OCR_SECOND_PASS_ENABLED", "false").lower() in ("true", "1", "yes")
     OPENROUTER_REFERER: str = os.getenv("OPENROUTER_REFERER", "https://synapseos.health")
     OPENROUTER_APP_TITLE: str = os.getenv("OPENROUTER_APP_TITLE", "SynapseOS Medical OCR")
+
+    # FractureNet YOLOv8 Detection Service (Remote Hugging Face Space / Fast Inference)
+    FRACTURE_API_URL: str = os.getenv("FRACTURE_API_URL", "https://yamxxx1-my-fastapi-app.hf.space")
     
     # Meta Official WhatsApp Cloud API (Graph API) Settings
     WHATSAPP_CLOUD_API_TOKEN: str = os.getenv("WHATSAPP_CLOUD_API_TOKEN", "")

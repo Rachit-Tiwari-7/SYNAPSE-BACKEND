@@ -8,12 +8,14 @@ import os
 import io
 import base64
 import logging
+import httpx
 from typing import Dict, Any, List, Optional
 from PIL import Image
 try:
     import numpy as np
 except ImportError:
     np = None
+from backend.app.core.config import settings
 from backend.app.core.state import SynapseOSState, AgentTraceStep
 
 logger = logging.getLogger(__name__)
@@ -70,16 +72,68 @@ def analyze_medical_image(
         if is_user_upload and image_base64:
             yolo_detections = []
             img_width, img_height = 800, 600
+            remote_result_image = None
+            remote_explanation_image = None
+            remote_gradcam_image = None
             
             try:
                 clean_b64 = image_base64.split(",")[-1] if "," in image_base64 else image_base64
                 img_bytes = base64.b64decode(clean_b64)
                 img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-                img_array = np.array(img)
-                img_height, img_width = img_array.shape[:2]
+                img_width, img_height = img.size
 
-                if model:
-                    # Run genuine YOLOv8 inference with low confidence threshold
+                # 1. Primary: Remote Hugging Face Space YOLOv8 API (Fast, GPU-friendly, Zero Render RAM)
+                fracture_api_url = getattr(settings, "FRACTURE_API_URL", "").rstrip("/")
+                if fracture_api_url:
+                    try:
+                        with httpx.Client(timeout=35.0) as client:
+                            res = client.post(
+                                f"{fracture_api_url}/detect",
+                                files={"file": (filename or "scan.jpg", img_bytes, "image/jpeg")}
+                            )
+                            if res.status_code == 200:
+                                hf_data = res.json()
+                                if hf_data.get("result_image"):
+                                    remote_result_image = f"{fracture_api_url}{hf_data['result_image']}"
+                                if hf_data.get("explanation_image"):
+                                    remote_explanation_image = f"{fracture_api_url}{hf_data['explanation_image']}"
+                                if hf_data.get("gradcam_image"):
+                                    remote_gradcam_image = f"{fracture_api_url}{hf_data['gradcam_image']}"
+
+                                for det in hf_data.get("detections", []):
+                                    box = det.get("box", {})
+                                    x1 = float(box.get("x1", 0))
+                                    y1 = float(box.get("y1", 0))
+                                    x2 = float(box.get("x2", 0))
+                                    y2 = float(box.get("y2", 0))
+                                    cls_name = det.get("class", "fracture")
+                                    conf = float(det.get("confidence", 0.0))
+
+                                    norm_x = (x1 / img_width) * 100 if img_width > 0 else 0
+                                    norm_y = (y1 / img_height) * 100 if img_height > 0 else 0
+                                    norm_w = ((x2 - x1) / img_width) * 100 if img_width > 0 else 0
+                                    norm_h = ((y2 - y1) / img_height) * 100 if img_height > 0 else 0
+
+                                    yolo_detections.append({
+                                        "label": f"Fracture: {cls_name.title()}",
+                                        "confidence": round(conf, 2),
+                                        "box": {
+                                            "x": round(norm_x, 1),
+                                            "y": round(norm_y, 1),
+                                            "width": round(norm_w, 1),
+                                            "height": round(norm_h, 1)
+                                        },
+                                        "color": "#EF4444"
+                                    })
+                                logger.info(f"Remote HF Space YOLOv8 detected {len(yolo_detections)} fracture(s)")
+                            else:
+                                logger.warning(f"HF Space YOLOv8 returned {res.status_code}: {res.text}")
+                    except Exception as remote_err:
+                        logger.warning(f"HF Space YOLOv8 remote call notice: {remote_err}")
+
+                # 2. Secondary Fallback: Local YOLOv8 model if remote was not used or failed
+                if not yolo_detections and model and np:
+                    img_array = np.array(img)
                     results = model(img_array, conf=0.15)
                     for result in results:
                         boxes = result.boxes.cpu().numpy()
@@ -89,11 +143,10 @@ def analyze_medical_image(
                             cls_id = int(box.cls[0])
                             cls_name = result.names[cls_id]
                             
-                            # Convert to normalized percentage coordinates
-                            norm_x = (x1 / img_width) * 100
-                            norm_y = (y1 / img_height) * 100
-                            norm_w = ((x2 - x1) / img_width) * 100
-                            norm_h = ((y2 - y1) / img_height) * 100
+                            norm_x = (x1 / img_width) * 100 if img_width > 0 else 0
+                            norm_y = (y1 / img_height) * 100 if img_height > 0 else 0
+                            norm_w = ((x2 - x1) / img_width) * 100 if img_width > 0 else 0
+                            norm_h = ((y2 - y1) / img_height) * 100 if img_height > 0 else 0
                             
                             yolo_detections.append({
                                 "label": f"Fracture: {cls_name.title()}",
@@ -129,6 +182,9 @@ def analyze_medical_image(
                     "visual_bounding_boxes": yolo_detections,
                     "has_gradcam_support": True,
                     "is_synthetic_demonstration": False,
+                    "remote_result_image": remote_result_image,
+                    "remote_explanation_image": remote_explanation_image,
+                    "remote_gradcam_image": remote_gradcam_image,
                     "suggested_questions_for_doctor": [
                         "Is this a non-displaced or displaced fracture?",
                         "Do I require surgical reduction (ORIF) or conservative casting?",
@@ -154,8 +210,11 @@ def analyze_medical_image(
                         "consult a physician for physical examination."
                     ),
                     "visual_bounding_boxes": [],  # ZERO fake boxes on user upload
-                    "has_gradcam_support": False,
+                    "has_gradcam_support": bool(remote_gradcam_image),
                     "is_synthetic_demonstration": False,
+                    "remote_result_image": remote_result_image,
+                    "remote_explanation_image": remote_explanation_image,
+                    "remote_gradcam_image": remote_gradcam_image,
                     "suggested_questions_for_doctor": [
                         "Could this be a soft-tissue, ligament, or tendon sprain rather than a bone fracture?",
                         "Are stress or hairline fractures visible on standard initial X-rays?",

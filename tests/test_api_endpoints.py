@@ -4,6 +4,7 @@ Comprehensive integration tests for all FastAPI REST endpoints.
 """
 
 import pytest
+from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 from backend.app.main import app
 
@@ -69,11 +70,61 @@ def test_scans_analyze_endpoint():
     assert data_chest["modality"] == "chest_xray"
     assert "ai_diagnosis_summary" in data_chest
 
-    # 2. Bone Fracture
+    # 2. Bone Fracture (Default & Upload with HF Space mock)
     resp_bone = client.post("/api/scans/analyze", json={"image_type": "bone_fracture"})
     assert resp_bone.status_code == 200
     data_bone = resp_bone.json()
     assert data_bone["modality"] == "bone_fracture"
+
+    # User upload testing remote HF Space response
+    import io
+    import base64
+    from PIL import Image
+
+    test_img = Image.new("RGB", (200, 200), color=(200, 200, 200))
+    buf = io.BytesIO()
+    test_img.save(buf, format="JPEG")
+    valid_b64 = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("utf-8")
+
+    mock_hf_response = {
+        "detection_id": "test-uuid-123",
+        "message": "Detection completed successfully",
+        "result_image": "/results/test_result.jpg",
+        "explanation_image": "/results/explanations/test_exp.jpg",
+        "gradcam_image": "/results/gradcam/test_grad.jpg",
+        "detections": [
+            {
+                "id": 0,
+                "class": "fracture",
+                "confidence": 0.88,
+                "box": {"x1": 50, "y1": 60, "x2": 150, "y2": 180}
+            }
+        ]
+    }
+    with patch("backend.app.agents.scan_agent.httpx.Client") as mock_client_cls:
+        mock_instance = MagicMock()
+        mock_instance.__enter__.return_value = mock_instance
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = mock_hf_response
+        mock_instance.post.return_value = mock_resp
+        mock_client_cls.return_value = mock_instance
+
+        resp_bone_upload = client.post(
+            "/api/scans/analyze",
+            json={
+                "image_type": "bone_fracture",
+                "filename": "arm_xray.jpg",
+                "image_base64": valid_b64
+            }
+        )
+        assert resp_bone_upload.status_code == 200
+        upload_data = resp_bone_upload.json()
+        assert upload_data["modality"] == "bone_fracture"
+        assert len(upload_data["visual_bounding_boxes"]) == 1
+        assert "Fracture: Fracture" in upload_data["visual_bounding_boxes"][0]["label"]
+        assert "remote_result_image" in upload_data
+        assert "https://yamxxx1-my-fastapi-app.hf.space/results/test_result.jpg" in upload_data["remote_result_image"]
 
     # 3. Prescription
     resp_rx = client.post("/api/scans/analyze", json={"image_type": "prescription"})
