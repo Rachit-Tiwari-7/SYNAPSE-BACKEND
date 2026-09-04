@@ -42,10 +42,11 @@ class Settings(BaseModel):
 
 
     
-    # Twilio SMS Settings
+    # Twilio SMS & Model Backend Settings
     TWILIO_ACCOUNT_SID: str = os.getenv("TWILIO_ACCOUNT_SID", "")
     TWILIO_AUTH_TOKEN: str = os.getenv("TWILIO_AUTH_TOKEN", "")
     TWILIO_PHONE_NUMBER: str = os.getenv("TWILIO_PHONE_NUMBER", "")
+    TWILIO_MODEL_BACKEND_URL: str = os.getenv("TWILIO_MODEL_BACKEND_URL", "https://yamxxx1-my-fastapi-app.hf.space")
 
     # Blockchain / IPFS (Pinata) settings
     PINATA_JWT: str = os.getenv("PINATA_JWT", "")

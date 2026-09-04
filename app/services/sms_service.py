@@ -109,17 +109,117 @@ async def send_outbound_sms(to_number: str, message: str) -> Dict[str, Any]:
     }
 
 
+async def analyze_scan_via_twilio_backend(media_url: str, from_number: str) -> Dict[str, Any]:
+    """
+    Fetches image from Twilio MMS or external media URL, dispatches to the Hugging Face
+    FastAPI YOLOv8 detection model backend (https://yamxxx1-my-fastapi-app.hf.space/detect),
+    and returns localized fracture bounding boxes and Grad-CAM attention links.
+    """
+    backend_url = getattr(settings, "TWILIO_MODEL_BACKEND_URL", "https://yamxxx1-my-fastapi-app.hf.space").rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=40.0) as client:
+            # 1. Download image from media_url
+            img_resp = await client.get(media_url)
+            if img_resp.status_code != 200:
+                logger.error(f"Failed to download Twilio MMS image from {media_url}: HTTP {img_resp.status_code}")
+                return {"success": False, "error": f"Failed to retrieve image: HTTP {img_resp.status_code}"}
+
+            img_bytes = img_resp.content
+
+            # 2. Dispatch to FastAPI model backend /detect
+            detect_resp = await client.post(
+                f"{backend_url}/detect",
+                files={"file": ("scan.jpg", img_bytes, "image/jpeg")}
+            )
+
+            if detect_resp.status_code == 200:
+                data = detect_resp.json()
+                detections = data.get("detections", [])
+                result_image = data.get("result_image")
+                gradcam_image = data.get("gradcam_image")
+
+                result_img_url = f"{backend_url}{result_image}" if result_image else None
+                gradcam_img_url = f"{backend_url}{gradcam_image}" if gradcam_image else None
+
+                has_fracture = len(detections) > 0
+                summary = (
+                    f"⚠️ Fracture Detected ({len(detections)} anomaly zones localized)"
+                    if has_fracture
+                    else "✅ Skeletal Integrity Preserved (No acute cortical fracture identified)"
+                )
+
+                return {
+                    "success": True,
+                    "summary": summary,
+                    "detections": detections,
+                    "result_image_url": result_img_url,
+                    "gradcam_image_url": gradcam_img_url,
+                    "raw": data
+                }
+            else:
+                logger.warning(f"FastAPI model backend returned {detect_resp.status_code}: {detect_resp.text}")
+                return {"success": False, "error": f"Model inference status {detect_resp.status_code}"}
+    except Exception as e:
+        logger.error(f"Error fetching Twilio model backend at {backend_url}: {e}")
+        return {"success": False, "error": str(e)}
+
+
 async def process_sms_inbound_webhook(
     from_number: str,
     body: str,
+    media_url: Optional[str] = None,
     raw_payload: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
     Core SMS routing engine for inbound webhook.
-    Handles Triage, Drug Safety, Outbreak Alerts, Emergency SOS, and Pinata IPFS Record Pinning.
+    Handles Triage, Drug Safety, Outbreak Alerts, Emergency SOS, Pinata IPFS Record Pinning,
+    and Twilio MMS Medical Image Analysis via Hugging Face YOLOv8 FastAPI backend.
     """
     clean_body = body.strip() if body else ""
     lower_body = clean_body.lower()
+
+    # 0. Check for Twilio MMS / Image Scan input (via MediaUrl0 or link in SMS body)
+    target_media_url = media_url
+    if not target_media_url and clean_body:
+        url_match = re.search(r'https?://[^\s]+(?:\.jpg|\.jpeg|\.png|\.webp|[a-zA-Z0-9_\-/]+)', clean_body)
+        if url_match and ("scan" in lower_body or "xray" in lower_body or "fracture" in lower_body or "bone" in lower_body or ".jpg" in lower_body or ".png" in lower_body):
+            target_media_url = url_match.group(0)
+
+    if target_media_url:
+        scan_analysis = await analyze_scan_via_twilio_backend(media_url=target_media_url, from_number=from_number)
+        if scan_analysis.get("success"):
+            summary = scan_analysis["summary"]
+            res_img = scan_analysis.get("result_image_url") or ""
+            grad_img = scan_analysis.get("gradcam_image_url") or ""
+
+            # Pin to IPFS
+            ipfs_record = {
+                "patient_phone": from_number,
+                "channel": "twilio_sms_mms",
+                "media_source": target_media_url,
+                "scan_analysis": scan_analysis
+            }
+            ipfs_res = await upload_json_to_ipfs(ipfs_record, record_name=f"sms_scan_{from_number}.json")
+            ipfs_url = ipfs_res.get("gateway_url", "")
+
+            reply_lines = [
+                f"🦴 Sanjeevni YOLOv8 Scan AI: {summary}",
+                f"• Visual Overlay: {res_img}" if res_img else "",
+                f"• Grad-CAM Heatmap: {grad_img}" if grad_img else "",
+                f"📋 Decentralized IPFS: {ipfs_url}" if ipfs_url else "",
+                "⚠️ Clinical screening support only. Consult an orthopedic doctor."
+            ]
+            sms_reply = "\n".join([line for line in reply_lines if line])
+            return {
+                "status": "processed",
+                "type": "medical_scan_analysis",
+                "intent": "MEDICAL_SCAN_YOLOV8",
+                "media_url": target_media_url,
+                "scan_result": scan_analysis,
+                "ipfs_url": ipfs_url,
+                "reply": sms_reply,
+                "twiml": generate_twiml_response(sms_reply)
+            }
 
     if not clean_body:
         reply = "Sanjeevni AI: Empty message received. " + SMS_MAIN_MENU

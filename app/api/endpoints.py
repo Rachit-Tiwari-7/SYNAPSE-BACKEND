@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
 import base64
+import httpx
 from backend.app.core.config import settings
 from backend.app.services.prescription_ocr_service import (
     validate_image_bytes,
@@ -1138,6 +1139,7 @@ async def broadcast_outbreak_advisory_endpoint(req: OutbreakBroadcastRequest):
 class SMSInboundRequest(BaseModel):
     sender: str = Field(default="+919876543210", json_schema_extra={"example": "+919876543210"})
     message: str = Field(default="1 I have severe headache and fever", json_schema_extra={"example": "1 I have severe headache and fever"})
+    media_url: Optional[str] = Field(default=None, json_schema_extra={"example": "https://yamxxx1-my-fastapi-app.hf.space/detect"})
 
 
 class SMSSendRequest(BaseModel):
@@ -1155,16 +1157,48 @@ async def twilio_sms_inbound_webhook(
     From: str = Form(default=""),
     Body: str = Form(default=""),
     To: Optional[str] = Form(default=None),
-    MessageSid: Optional[str] = Form(default=None)
+    MessageSid: Optional[str] = Form(default=None),
+    NumMedia: Optional[str] = Form(default="0"),
+    MediaUrl0: Optional[str] = Form(default=None),
+    MediaContentType0: Optional[str] = Form(default=None)
 ):
     """
     Official Twilio Inbound Webhook.
     Accepts application/x-www-form-urlencoded Twilio payload, runs multi-agent clinical triage,
-    pins clinical reports to Pinata IPFS, and returns standard XML TwiML <Response><Message>...</Message></Response>.
+    pins clinical reports to Pinata IPFS, handles Twilio MMS medical scans via YOLOv8 model backend,
+    and returns standard XML TwiML <Response><Message>...</Message></Response>.
     """
     sender = From or "+919876543210"
-    result = await process_sms_inbound_webhook(from_number=sender, body=Body)
+    result = await process_sms_inbound_webhook(
+        from_number=sender,
+        body=Body,
+        media_url=MediaUrl0
+    )
     return Response(content=result["twiml"], media_type="application/xml")
+
+
+@router.get("/sms/model/status", tags=["Omnichannel 2G SMS"])
+async def get_twilio_model_backend_status():
+    """
+    Checks the connectivity and status of the remote Twilio model backend
+    (Hugging Face FastAPI YOLOv8 detection server).
+    """
+    backend_url = getattr(settings, "TWILIO_MODEL_BACKEND_URL", "https://yamxxx1-my-fastapi-app.hf.space").rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(f"{backend_url}/status")
+            return {
+                "backend_url": backend_url,
+                "status_code": resp.status_code,
+                "healthy": resp.status_code == 200,
+                "data": resp.json() if resp.status_code == 200 else resp.text
+            }
+    except Exception as e:
+        return {
+            "backend_url": backend_url,
+            "healthy": False,
+            "error": str(e)
+        }
 
 
 @router.post("/sms/send", tags=["Omnichannel 2G SMS"])
@@ -1182,7 +1216,11 @@ async def sms_gateway_endpoint(req: SMSInboundRequest):
     Processes 2G plain-text SMS messages for basic keypad phone users in rural areas.
     Returns plain-text concise responses, IPFS CIDs, and transmission metadata.
     """
-    res = await process_sms_inbound_webhook(from_number=req.sender, body=req.message)
+    res = await process_sms_inbound_webhook(
+        from_number=req.sender,
+        body=req.message,
+        media_url=req.media_url
+    )
     reply_sms = res.get("reply", "")
 
     return {
@@ -1190,9 +1228,9 @@ async def sms_gateway_endpoint(req: SMSInboundRequest):
         "protocol": "GSM_SMS_GATEWAY",
         "sender": req.sender,
         "type": res.get("type", "general"),
+        "media_url": req.media_url,
         "ipfs_cid": res.get("ipfs_cid"),
         "ipfs_url": res.get("ipfs_url"),
-        "character_count": len(reply_sms),
         "sms_parts": 1 if len(reply_sms) <= 160 else 2,
         "reply_text": reply_sms,
         "twiml": res.get("twiml")

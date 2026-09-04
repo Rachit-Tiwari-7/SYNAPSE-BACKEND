@@ -78,6 +78,12 @@ async def upload_json_to_ipfs(data: Dict[str, Any], record_name: str = "medical_
             if resp.status_code in (200, 201):
                 res_data = resp.json()
                 cid = res_data.get("IpfsHash", "")
+                _SIMULATED_IPFS_STORE[cid] = {
+                    "name": record_name,
+                    "data": data,
+                    "type": "application/json",
+                    "simulated": False
+                }
                 return {
                     "cid": cid,
                     "ipfs_hash": cid,
