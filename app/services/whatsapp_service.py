@@ -8,7 +8,9 @@ from backend.app.services.meta_whatsapp_service import (
     trigger_emergency_sos_whatsapp,
     MAIN_MENU_TEXT,
     format_response_for_whatsapp,
-    format_compact_whatsapp_card
+    format_compact_whatsapp_card,
+    clear_deduplication_cache,
+    message_deduplicator
 )
 from backend.app.services.meta_whatsapp_client import (
     send_whatsapp_message,
@@ -26,7 +28,9 @@ __all__ = [
     "trigger_emergency_sos_whatsapp",
     "MAIN_MENU_TEXT",
     "format_response_for_whatsapp",
-    "format_compact_whatsapp_card"
+    "format_compact_whatsapp_card",
+    "clear_deduplication_cache",
+    "message_deduplicator"
 ]
 
 

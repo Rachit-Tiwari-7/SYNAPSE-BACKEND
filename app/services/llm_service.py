@@ -6,6 +6,7 @@ Provides genuine medical reasoning, structured clinical JSON parsing, and automa
 
 import json
 import logging
+import re
 import httpx
 from typing import Dict, Any, List, Optional
 from backend.app.core.config import settings
@@ -98,9 +99,10 @@ async def call_llm_json(
 ) -> Dict[str, Any]:
     """
     Executes an LLM request and guarantees a structured JSON dictionary output.
+    Gracefully handles empty responses, markdown wrapping, code blocks, and failovers.
     """
     raw = await call_llm(messages=messages, model=model, temperature=temperature, json_mode=True)
-    if not raw:
+    if not raw or not isinstance(raw, str) or not raw.strip():
         return fallback_dict
         
     try:
@@ -108,13 +110,28 @@ async def call_llm_json(
         clean_text = raw.strip()
         if clean_text.startswith("```json"):
             clean_text = clean_text[7:]
+        elif clean_text.startswith("```"):
+            clean_text = clean_text[3:]
         if clean_text.endswith("```"):
             clean_text = clean_text[:-3]
         clean_text = clean_text.strip()
 
-        parsed = json.loads(clean_text)
-        if isinstance(parsed, dict):
-            return parsed
+        if not clean_text:
+            return fallback_dict
+
+        # 1. Attempt direct JSON parsing
+        try:
+            parsed = json.loads(clean_text)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            # 2. Fallback: extract outermost JSON object {...} via regex
+            match = re.search(r"(\{[\s\S]*\})", clean_text)
+            if match:
+                parsed = json.loads(match.group(1))
+                if isinstance(parsed, dict):
+                    return parsed
+            raise
     except Exception as e:
         logger.warning(f"Error parsing LLM response as JSON: {e}")
 

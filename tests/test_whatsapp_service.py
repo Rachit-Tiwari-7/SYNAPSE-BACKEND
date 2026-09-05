@@ -10,7 +10,8 @@ from backend.app.services.whatsapp_service import (
     MAIN_MENU_TEXT,
     format_response_for_whatsapp,
     format_compact_whatsapp_card,
-    trigger_emergency_sos_whatsapp
+    trigger_emergency_sos_whatsapp,
+    clear_deduplication_cache
 )
 from backend.app.core.session_manager import session_manager
 
@@ -369,6 +370,101 @@ Seek immediate medical attention if you experience rash, breathing difficulty, o
 
     # Must include clean footer
     assert "🌿 Powered by Synapse-OS Multi-Agent Swarm" in output
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_webhook_deduplication_drops_retries():
+    """Verifies that Meta retries for the same message ID are detected and dropped immediately."""
+    clear_deduplication_cache()
+    test_phone = "919876543999"
+    
+    payload = {
+        "object": "whatsapp_business_account",
+        "entry": [{
+            "id": "100000000000000",
+            "changes": [{
+                "value": {
+                    "messaging_product": "whatsapp",
+                    "metadata": {"display_phone_number": "15550234567", "phone_number_id": "100000000000000"},
+                    "contacts": [{"profile": {"name": "Test User"}, "wa_id": test_phone}],
+                    "messages": [{
+                        "from": test_phone,
+                        "id": "wamid.TEST_DEDUP_UNIQUE_1",
+                        "timestamp": "1772185500",
+                        "type": "text",
+                        "text": {"body": "SOS"}
+                    }]
+                },
+                "field": "messages"
+            }]
+        }]
+    }
+
+    # 1. First invocation: Should process
+    res1 = await process_whatsapp_inbound_webhook(payload)
+    assert res1["status"] == "processed"
+    assert res1["type"] == "emergency_sos"
+
+    # 2. Second invocation (Meta Retry with same wamid): Should be ignored immediately
+    res2 = await process_whatsapp_inbound_webhook(payload)
+    assert res2["status"] == "duplicate_ignored"
+    assert res2["id"] == "wamid.TEST_DEDUP_UNIQUE_1"
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_delivery_status_acknowledged():
+    """Verifies that Meta delivery status webhooks (sent/delivered/read) are acknowledged without agent execution."""
+    status_payload = {
+        "object": "whatsapp_business_account",
+        "entry": [{
+            "id": "100000000000000",
+            "changes": [{
+                "value": {
+                    "messaging_product": "whatsapp",
+                    "metadata": {"display_phone_number": "15550234567", "phone_number_id": "100000000000000"},
+                    "statuses": [{
+                        "id": "wamid.HBgM12345678",
+                        "status": "delivered",
+                        "timestamp": "1772185502",
+                        "recipient_id": "919876543210"
+                    }]
+                },
+                "field": "messages"
+            }]
+        }]
+    }
+    res = await process_whatsapp_inbound_webhook(status_payload)
+    assert res["status"] == "status_acknowledged"
+    assert res["delivery_status"] == "delivered"
+
+
+@pytest.mark.asyncio
+async def test_llm_json_robustness():
+    """Verifies call_llm_json handles markdown wrappers and empty strings without crashing."""
+    from backend.app.services.llm_service import call_llm_json
+    from unittest.mock import patch, AsyncMock
+
+    fallback = {"status": "fallback_default"}
+
+    # Case 1: Empty string response -> returns fallback without crash
+    with patch("backend.app.services.llm_service.call_llm", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = ""
+        res = await call_llm_json([], fallback_dict=fallback)
+        assert res == fallback
+
+    # Case 2: Markdown wrapped json -> extracts clean dict
+    with patch("backend.app.services.llm_service.call_llm", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = "```json\n{\"condition\": \"Migraine\", \"severity\": \"moderate\"}\n```"
+        res = await call_llm_json([], fallback_dict=fallback)
+        assert res["condition"] == "Migraine"
+        assert res["severity"] == "moderate"
+
+    # Case 3: Explanatory text surrounding JSON -> regex extracts dict
+    with patch("backend.app.services.llm_service.call_llm", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = "Here is the diagnosis JSON:\n{\"condition\": \"Common Cold\"}\nHope this helps!"
+        res = await call_llm_json([], fallback_dict=fallback)
+        assert res["condition"] == "Common Cold"
+
 
 
 
