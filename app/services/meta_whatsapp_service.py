@@ -8,8 +8,7 @@ import base64
 import json
 import logging
 import re
-import time
-from typing import Dict, Any, Optional, List, Set
+from typing import Dict, Any, Optional, List
 import httpx
 
 from backend.app.core.config import settings
@@ -674,77 +673,13 @@ def format_response_for_whatsapp(text: str, compact: bool = True) -> str:
 
 
 # =========================================================
-# 2. Inbound Webhook Processor & Deduplication Cache
+# 2. Inbound Webhook Processor
 # =========================================================
-
-class WhatsAppMessageDeduplicator:
-    """
-    Thread/Asyncio-safe in-memory cache to prevent processing duplicate messages 
-    caused by Meta WhatsApp webhook retries, network glitches, or rapid multi-delivery.
-    """
-    def __init__(self, ttl_seconds: float = 600.0, max_entries: int = 5000):
-        self.ttl_seconds = ttl_seconds
-        self.max_entries = max_entries
-        self._processed: Dict[str, float] = {}
-        self._in_flight: Set[str] = set()
-
-    def _cleanup(self, now: float):
-        expired = [k for k, ts in self._processed.items() if now - ts > self.ttl_seconds]
-        for k in expired:
-            self._processed.pop(k, None)
-        if len(self._processed) > self.max_entries:
-            sorted_keys = sorted(self._processed.keys(), key=lambda k: self._processed[k])
-            for k in sorted_keys[:len(self._processed) - self.max_entries]:
-                self._processed.pop(k, None)
-
-    def is_duplicate(self, msg_id: Optional[str], sender_phone: Optional[str] = None, text: Optional[str] = None) -> bool:
-        now = time.time()
-        self._cleanup(now)
-
-        key = msg_id
-        if not key and sender_phone:
-            clean_txt = (text or "").strip().lower()
-            key = f"fingerprint:{sender_phone}:{clean_txt}"
-
-        if not key:
-            return False
-
-        if key in self._in_flight or key in self._processed:
-            return True
-
-        return False
-
-    def mark_in_flight(self, key: Optional[str]):
-        if key:
-            self._in_flight.add(key)
-
-    def mark_processed(self, key: Optional[str]):
-        if key:
-            self._in_flight.discard(key)
-            self._processed[key] = time.time()
-
-    def remove_in_flight(self, key: Optional[str]):
-        if key:
-            self._in_flight.discard(key)
-
-    def clear(self):
-        self._processed.clear()
-        self._in_flight.clear()
-
-
-message_deduplicator = WhatsAppMessageDeduplicator()
-
-
-def clear_deduplication_cache():
-    """Clears deduplication cache (primarily for test isolation)."""
-    message_deduplicator.clear()
-
 
 async def process_whatsapp_inbound_webhook(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     Unified Inbound WhatsApp Webhook Processor for Meta WhatsApp Cloud API.
     Handles Language Selection Onboarding, Greetings, Multi-Turn FSM, and Specialist Agent Routing.
-    Protects against duplicate webhook dispatches and retries.
     """
     logger.info(f"[Meta Webhook Inbound] Received payload keys: {list(payload.keys())}")
 
@@ -754,7 +689,6 @@ async def process_whatsapp_inbound_webhook(payload: Dict[str, Any]) -> Dict[str,
     image_base64 = None
     media_id = None
     caption = ""
-    msg_id = None
 
     # 1. Parse Official Meta Graph API Format
     if "entry" in payload:
@@ -774,7 +708,6 @@ async def process_whatsapp_inbound_webhook(payload: Dict[str, Any]) -> Dict[str,
                 return {"status": "ignored", "reason": "no_messages_in_payload"}
 
             msg = messages[0]
-            msg_id = msg.get("id")
             sender_phone = msg.get("from", "unknown")
             msg_type = msg.get("type", "text")
 
@@ -801,7 +734,6 @@ async def process_whatsapp_inbound_webhook(payload: Dict[str, Any]) -> Dict[str,
     # 2. Parse Simulation / Fallback Format
     else:
         data = payload.get("data", payload)
-        msg_id = data.get("id") or payload.get("id") or payload.get("message_id")
         sender_phone = (
             data.get("from") or
             data.get("sender_phone") or
@@ -820,43 +752,6 @@ async def process_whatsapp_inbound_webhook(payload: Dict[str, Any]) -> Dict[str,
         image_base64 = data.get("image_base64") or (data.get("body") if isinstance(data.get("body"), str) and data.get("body").startswith("data:image") else None)
 
     sender_phone = str(sender_phone).replace("@c.us", "").replace("+", "").strip()
-
-    # Deduplication check: Drop duplicate/retried messages
-    dedup_key = msg_id or (f"fingerprint:{sender_phone}:{message_text}" if message_text else None)
-    if dedup_key and message_deduplicator.is_duplicate(msg_id, sender_phone, message_text):
-        logger.warning(f"[Meta Webhook Deduplication] Ignored duplicate/retried message (key={dedup_key}) from {sender_phone}")
-        return {
-            "status": "duplicate_ignored",
-            "id": msg_id,
-            "sender": sender_phone,
-            "reason": "Message already processed or currently in-flight."
-        }
-
-    if dedup_key:
-        message_deduplicator.mark_in_flight(dedup_key)
-
-    try:
-        return await _dispatch_inbound_whatsapp_message(
-            sender_phone=sender_phone,
-            message_text=message_text,
-            msg_type=msg_type,
-            image_base64=image_base64,
-            media_id=media_id,
-            caption=caption
-        )
-    finally:
-        if dedup_key:
-            message_deduplicator.mark_processed(dedup_key)
-
-
-async def _dispatch_inbound_whatsapp_message(
-    sender_phone: str,
-    message_text: str,
-    msg_type: str = "text",
-    image_base64: Optional[str] = None,
-    media_id: Optional[str] = None,
-    caption: str = ""
-) -> Dict[str, Any]:
     session = session_manager.get_session(sender_phone)
     user_lang = session["context"].get("lang") or detect_language_script(message_text)
 
@@ -1424,3 +1319,23 @@ async def trigger_emergency_sos_whatsapp(
         "patient": patient_name,
         "delivery_details": delivery_result
     }
+
+
+_dedup_cache = set()
+
+def clear_deduplication_cache():
+    """Clears the inbound WhatsApp message deduplication cache."""
+    _dedup_cache.clear()
+
+class MessageDeduplicator:
+    """In-memory message ID deduplicator for webhook deliveries."""
+    def is_duplicate(self, msg_id: str) -> bool:
+        if not msg_id:
+            return False
+        if msg_id in _dedup_cache:
+            return True
+        _dedup_cache.add(msg_id)
+        return False
+
+message_deduplicator = MessageDeduplicator()
+

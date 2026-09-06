@@ -33,9 +33,44 @@ SMS_MAIN_MENU = (
 EMERGENCY_KEYWORDS = {"sos", "emergency", "ambulance", "108", "urgent", "heart attack", "stroke", "severe bleeding"}
 
 
-def format_sms_text(text: str, max_chars: int = 480) -> str:
-    """Formats and trims text suitable for clean SMS delivery."""
-    clean = re.sub(r'[*_#`]', '', text).strip()
+def format_sms_text(text: str, max_chars: int = 320) -> str:
+    """
+    Formats and trims text suitable for clean 2G GSM 7-Bit plain text SMS delivery.
+    Strips code blocks, markdown symbols, asterisks, hashes, backticks, divider bars,
+    emojis, corrupted characters, and raw URL dumps.
+    """
+    if not text:
+        return ""
+    
+    # 1. Remove code blocks and JSON-like snippets
+    clean = re.sub(r'```[\s\S]*?```', '', text)
+    clean = re.sub(r'`[^`]*`', '', clean)
+    clean = re.sub(r'\{[^{}]*\}', '', clean)
+
+    # 2. Remove URLs if they are raw IPFS / gateway links
+    clean = re.sub(r'https?://(?:gateway\.pinata\.cloud|ipfs)[^\s)]+', '', clean)
+
+    # 3. Strip markdown symbols, dividers, and bullet points
+    clean = re.sub(r'[#*_~`>]', '', clean)
+    clean = re.sub(r'[-=━─]{3,}', '', clean)
+    clean = clean.replace('•', '-')
+
+    # 4. Strip emojis and symbols that break 2G GSM-7 keypad phones
+    clean = re.sub(
+        r'[\U00010000-\U0010ffff\u2600-\u26FF\u2700-\u27BF\uFE00-\uFE0F\u200D\u200C\u2300-\u23FF\u2B50-\u2B55\u203C\u2049\u2139\u2194-\u21AA\u2934\u2935\u3297\u3299\u3030\u303D]',
+        '',
+        clean
+    )
+
+    # 5. Remove corrupted non-ASCII replacement artifacts like d?? or multiple question marks
+    clean = re.sub(r'\bd\?+\b', '', clean)
+    clean = re.sub(r'\?{2,}', '', clean)
+
+    # 6. Clean up redundant spaces and newlines
+    lines = [line.strip() for line in clean.splitlines() if line.strip()]
+    clean = " ".join(lines)
+    clean = re.sub(r'\s{2,}', ' ', clean).strip()
+
     if len(clean) > max_chars:
         clean = clean[:max_chars - 3].rstrip() + "..."
     return clean
@@ -171,9 +206,10 @@ async def process_sms_inbound_webhook(
     raw_payload: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
-    Core SMS routing engine for inbound webhook.
-    Handles Triage, Drug Safety, Outbreak Alerts, Emergency SOS, Pinata IPFS Record Pinning,
-    and Twilio MMS Medical Image Analysis via Hugging Face YOLOv8 FastAPI backend.
+    Core 2G SMS routing engine for inbound webhook / keypad simulator.
+    Delivers clean GSM 7-bit plain text without code, raw markdown, or corrupted characters.
+    Handles Symptom Triage (1), Drug Safety (2), UIP Vaccination (7), District Outbreaks (8),
+    Rural Preventive ORS (9), Appointments (5), and Emergency SOS.
     """
     clean_body = body.strip() if body else ""
     lower_body = clean_body.lower()
@@ -202,14 +238,7 @@ async def process_sms_inbound_webhook(
             ipfs_res = await upload_json_to_ipfs(ipfs_record, record_name=f"sms_scan_{from_number}.json")
             ipfs_url = ipfs_res.get("gateway_url", "")
 
-            reply_lines = [
-                f"🦴 Sanjeevni YOLOv8 Scan AI: {summary}",
-                f"• Visual Overlay: {res_img}" if res_img else "",
-                f"• Grad-CAM Heatmap: {grad_img}" if grad_img else "",
-                f"📋 Decentralized IPFS: {ipfs_url}" if ipfs_url else "",
-                "⚠️ Clinical screening support only. Consult an orthopedic doctor."
-            ]
-            sms_reply = "\n".join([line for line in reply_lines if line])
+            sms_reply = f"SANJEEVNI SCAN AI: {summary}. Clinical screening support only. Consult an orthopedic doctor."
             return {
                 "status": "processed",
                 "type": "medical_scan_analysis",
@@ -222,7 +251,7 @@ async def process_sms_inbound_webhook(
             }
 
     if not clean_body:
-        reply = "Sanjeevni AI: Empty message received. " + SMS_MAIN_MENU
+        reply = "SANJEEVNI HEALTH SMS: Reply 1 <symptoms>, 2 <meds>, 7 <age> for Vaccine, 8 <district> for Outbreaks, 9 for ORS Tips, SOS for 112/108."
         return {
             "status": "processed",
             "type": "empty_fallback",
@@ -231,13 +260,10 @@ async def process_sms_inbound_webhook(
         }
 
     # 1. Emergency SOS check
-    if any(k in lower_body for k in EMERGENCY_KEYWORDS):
+    if any(k in lower_body for k in EMERGENCY_KEYWORDS) or lower_body == "sos":
         sos_reply = (
-            "🚨 SANJEEVNI RED ALERT EMERGENCY PROTOCOL ACTIVATED 🚨\n\n"
-            "• Call 108 / 112 immediately for Ambulance.\n"
-            "• Keep patient calm and in resting posture.\n"
-            "• If chest pain/shortness of breath, loosen tight clothing.\n"
-            "• Nearest Emergency PHC notified."
+            "SANJEEVNI RED ALERT: Call 108 / 112 immediately for Emergency Ambulance. "
+            "Keep patient resting and calm. Nearest PHC notified."
         )
         return {
             "status": "processed",
@@ -249,64 +275,48 @@ async def process_sms_inbound_webhook(
 
     # 2. Greeting / Menu dispatch
     if lower_body in {"hi", "hello", "namaste", "menu", "start", "help", "info"}:
+        menu_reply = "SANJEEVNI HEALTH SMS: Reply 1 <symptoms>, 2 <meds>, 7 <age> for Vaccine, 8 <district> for Outbreaks, 9 for ORS Tips, SOS for 112/108."
         return {
             "status": "processed",
             "type": "menu_dispatched",
             "intent": "MENU_NAVIGATION",
-            "reply": SMS_MAIN_MENU,
-            "twiml": generate_twiml_response(SMS_MAIN_MENU)
+            "reply": menu_reply,
+            "twiml": generate_twiml_response(menu_reply)
         }
 
-    # 3. Numbered Menu Selection Routing
+    # Extract command token and trailing query
     first_token = lower_body.split()[0] if lower_body else ""
     rest_query = clean_body[len(first_token):].strip() if len(clean_body) > len(first_token) else ""
 
-    # Option 1: Symptom Triage
-    if first_token == "1" or ("symptom" in lower_body and len(lower_body.split()) > 2):
+    # Option 1: Symptom Triage (e.g. "1 high fever and headache", "1", "symptom fever")
+    if first_token == "1" or ("symptom" in lower_body and len(lower_body.split()) > 1):
         symptom_text = rest_query if rest_query else clean_body
         triage_res = await analyze_symptoms(text=symptom_text)
         
-        urgency = triage_res.get("triage_level", "DOCTOR_CONSULT")
+        urgency = triage_res.get("triage_level", "DOCTOR_CONSULT").replace("_", " ")
         action = triage_res.get("recommended_action", "Consult nearest healthcare professional.")
-        
-        # Pin clinical summary to Pinata IPFS
-        ipfs_record = {
-            "patient_phone": from_number,
-            "channel": "sms",
-            "symptoms": symptom_text,
-            "triage_level": urgency,
-            "recommended_action": action,
-            "triage_summary": triage_res
-        }
-        ipfs_res = await upload_json_to_ipfs(ipfs_record, record_name=f"sms_triage_{from_number}.json")
-        cid = ipfs_res.get("cid", "")
-        gateway_url = ipfs_res.get("gateway_url", "")
+        clean_action = format_sms_text(str(action), 160)
 
-        sms_reply = (
-            f"🏥 Sanjeevni Triage: {urgency.replace('_', ' ')}\n"
-            f"Advice: {format_sms_text(str(action), 160)}\n"
-            f"📋 Secure IPFS Record: {gateway_url}"
-        )
+        sms_reply = f"SANJEEVNI TRIAGE [{urgency}]: {clean_action}. If severe or worsening, visit nearest PHC or call 108."
         return {
             "status": "processed",
             "type": "symptom_triage",
             "intent": "SYMPTOM_TRIAGE",
             "urgency": urgency,
-            "ipfs_cid": cid,
-            "ipfs_url": gateway_url,
             "reply": sms_reply,
             "twiml": generate_twiml_response(sms_reply)
         }
 
-    # Option 2: Drug Interaction
-    if first_token == "2" or "drug" in lower_body or "medicine" in lower_body or "interaction" in lower_body:
+    # Option 2: Drug Interaction (e.g. "2 Paracetamol and Aspirin", "2", "drug aspirin")
+    if first_token == "2" or "drug" in lower_body or "medicine" in lower_body or "interaction" in lower_body or "paracetamol" in lower_body:
         drug_query = rest_query if rest_query else clean_body
         safety_res = await evaluate_drug_safety(text=drug_query)
         is_safe = safety_res.get("safe_to_combine", True)
-        safety_status = "SAFE ✅" if is_safe else "CAUTION ⚠️"
-        summary = safety_res.get("clinical_pharmacology_summary", "Standard interaction screening completed.")
-        
-        sms_reply = f"💊 Sanjeevni Drug Safety [{safety_status}]: {format_sms_text(str(summary), 280)}"
+        safety_status = "SAFE" if is_safe else "CAUTION"
+        summary = safety_res.get("clinical_pharmacology_summary", "Standard drug safety review completed.")
+        clean_summary = format_sms_text(str(summary), 220)
+
+        sms_reply = f"SANJEEVNI DRUG SAFETY [{safety_status}]: {clean_summary}. Consult doctor for proper dosing."
         return {
             "status": "processed",
             "type": "drug_check",
@@ -316,15 +326,48 @@ async def process_sms_inbound_webhook(
             "twiml": generate_twiml_response(sms_reply)
         }
 
-    # Option 3: Outbreak & Disease Alert
-    if first_token == "3" or "outbreak" in lower_body or "dengue" in lower_body or "malaria" in lower_body:
+    # Option 7 or 4: UIP Vaccination Schedule (e.g. "7 6 weeks", "7 birth", "7", "4", "vaccine")
+    if first_token in {"7", "4"} or "vaccine" in lower_body or "uwin" in lower_body or "immunization" in lower_body:
+        query_text = rest_query.lower() if rest_query else lower_body
+        weeks = 6
+        age_label = "6 Weeks"
+        if "birth" in query_text or "newborn" in query_text or "0" in query_text:
+            weeks = 0
+            age_label = "Birth Dose"
+        elif "10" in query_text or "2.5" in query_text:
+            weeks = 10
+            age_label = "10 Weeks"
+        elif "14" in query_text or "3.5" in query_text:
+            weeks = 14
+            age_label = "14 Weeks"
+        elif "9 month" in query_text or "1 year" in query_text:
+            weeks = 40
+            age_label = "9 Months"
+
+        vax_res = calculate_vaccination_schedule(age_in_weeks=weeks, category="child")
+        due_str = vax_res.get("next_vaccine_due", "Pentavalent-1, Rotavirus-1, fIPV-1, PCV-1")
+        
+        sms_reply = f"SANJEEVNI UIP VACCINE ({age_label}): Due: {due_str}. Free at nearest Anganwadi/PHC. National Helpline: 1075."
+        return {
+            "status": "processed",
+            "type": "vaccination_schedule",
+            "intent": "VACCINATION_SCHEDULE",
+            "reply": sms_reply,
+            "twiml": generate_twiml_response(sms_reply)
+        }
+
+    # Option 8 or 3: District Outbreak & Disease Alert (e.g. "8 Delhi", "8 Mumbai", "8", "3", "outbreak")
+    if first_token in {"8", "3"} or "outbreak" in lower_body or "dengue" in lower_body or "malaria" in lower_body:
         district_query = rest_query if rest_query else "Delhi"
         outbreak_res = get_district_outbreak_risk(query=district_query)
         o_data = outbreak_res.get("data", {})
-        risk = o_data.get("risk_level", "MODERATE")
-        advisory = o_data.get("preventive_advisory", "Follow preventive hygiene.")
+        risk = o_data.get("risk_badge", "HIGH").replace("🔴", "").replace("🟠", "").replace("🟢", "").strip()
+        primary = o_data.get("primary_outbreak", "Dengue & Chikungunya")
+        advisory = o_data.get("preventive_advisory", "Clean coolers on Sunday Dry Day. Use mosquito nets.")
+        helpline = o_data.get("helpline", "011-22307145")
         
-        sms_reply = f"📢 Outbreak Alert for {district_query} [{risk.upper()}]: {format_sms_text(str(advisory), 260)}"
+        clean_advisory = format_sms_text(str(advisory), 120)
+        sms_reply = f"SANJEEVNI OUTBREAK ALERT ({district_query}): Risk: {risk}. Surge in {primary}. Advisory: {clean_advisory}. Helpline: {helpline}."
         return {
             "status": "processed",
             "type": "outbreak_alert",
@@ -334,23 +377,20 @@ async def process_sms_inbound_webhook(
             "twiml": generate_twiml_response(sms_reply)
         }
 
-    # Option 4: Vaccination Schedule
-    if first_token == "4" or "vaccine" in lower_body or "uwin" in lower_body:
-        vax_res = calculate_vaccination_schedule(age_in_weeks=6, category="child")
-        due_str = vax_res.get("next_vaccine_due", "OPV-1, Pentavalent-1")
-        
-        sms_reply = f"💉 UIP Vaccination Schedule (6 Weeks): Due: {due_str}. Visit nearest Govt Anganwadi/PHC."
+    # Option 9: Rural Preventive Health & ORS Tips (e.g. "9", "9 ORS", "diarrhea", "nutrition")
+    if first_token == "9" or "ors" in lower_body or "diarrhea" in lower_body or "preventive" in lower_body or "nutrition" in lower_body:
+        sms_reply = "SANJEEVNI ORS GUIDE: Mix 1 WHO-ORS packet in 1L clean water. Give frequent sips after loose stool + Zinc 20mg daily for 14 days. If severe dehydration, visit PHC."
         return {
             "status": "processed",
-            "type": "vaccination_schedule",
-            "intent": "VACCINATION_SCHEDULE",
+            "type": "rural_preventive",
+            "intent": "RURAL_HEALTH",
             "reply": sms_reply,
             "twiml": generate_twiml_response(sms_reply)
         }
 
     # Option 5: Appointment / PHC
     if first_token == "5" or "appointment" in lower_body or "doctor" in lower_body or "phc" in lower_body:
-        sms_reply = "🩺 PHC Slot: Dr. R. Sharma (General Medicine) available today at 3:30 PM. Reply 'CONFIRM' to book."
+        sms_reply = "SANJEEVNI PHC: Dr. R. Sharma (General Medicine) available today at 3:30 PM. Reply CONFIRM to book."
         return {
             "status": "processed",
             "type": "appointment_slot",
@@ -359,37 +399,18 @@ async def process_sms_inbound_webhook(
             "twiml": generate_twiml_response(sms_reply)
         }
 
-    # 4. General Natural Clinical Language & Zero-Selection Intent Tracking
+    # 4. General Natural Clinical Language & Swarm Fallback
     orch_res = await orchestrate_health_request(message=clean_body, channel="sms", user_id=from_number)
     final_text = getattr(orch_res, "final_response", "") or str(orch_res)
     detected_intent = getattr(orch_res, "detected_intent", "GENERAL_HEALTH")
-    summary_text = format_sms_text(final_text, 300)
+    clean_summary = format_sms_text(final_text, 260)
 
-    # If clinical triage or drug check, pin record to Pinata IPFS
-    ipfs_cid = None
-    ipfs_url = None
-    if detected_intent in ("SYMPTOM_TRIAGE", "DRUG_SAFETY", "DIGITAL_TWIN"):
-        ipfs_record = {
-            "patient_phone": from_number,
-            "channel": "sms",
-            "intent": detected_intent,
-            "query": clean_body,
-            "response": final_text,
-            "trace_steps": [t.action for t in getattr(orch_res, "trace", [])]
-        }
-        ipfs_res = await upload_json_to_ipfs(ipfs_record, record_name=f"sms_{detected_intent.lower()}_{from_number}.json")
-        ipfs_cid = ipfs_res.get("cid")
-        ipfs_url = ipfs_res.get("gateway_url")
-
-    ipfs_suffix = f"\n📋 IPFS Record: {ipfs_url}" if ipfs_url else ""
-    sms_reply = f"Sanjeevni AI [{detected_intent.replace('_', ' ')}]: {summary_text}{ipfs_suffix}\n(Text 'MENU' for options)"
+    sms_reply = f"SANJEEVNI HEALTH: {clean_summary} (Reply 1-9 for menus, SOS for emergency)."
     
     return {
         "status": "processed",
         "type": "orchestrated_intent",
         "intent": detected_intent,
-        "ipfs_cid": ipfs_cid,
-        "ipfs_url": ipfs_url,
         "reply": sms_reply,
         "twiml": generate_twiml_response(sms_reply)
     }

@@ -30,9 +30,6 @@ class Settings(BaseModel):
     OPENROUTER_REFERER: str = os.getenv("OPENROUTER_REFERER", "https://synapseos.health")
     OPENROUTER_APP_TITLE: str = os.getenv("OPENROUTER_APP_TITLE", "SynapseOS Medical OCR")
 
-    # FractureNet YOLOv8 Detection Service (Remote Hugging Face Space / Fast Inference)
-    FRACTURE_API_URL: str = os.getenv("FRACTURE_API_URL", "https://yamxxx1-my-fastapi-app.hf.space")
-    
     # Meta Official WhatsApp Cloud API (Graph API) Settings
     WHATSAPP_CLOUD_API_TOKEN: str = os.getenv("WHATSAPP_CLOUD_API_TOKEN", "")
     WHATSAPP_PHONE_NUMBER_ID: str = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
@@ -40,13 +37,10 @@ class Settings(BaseModel):
     WHATSAPP_WEBHOOK_VERIFY_TOKEN: str = os.getenv("WHATSAPP_WEBHOOK_VERIFY_TOKEN", "sanjeevni_secret_token_123")
     WHATSAPP_API_VERSION: str = os.getenv("WHATSAPP_API_VERSION", "v20.0")
 
-
-    
-    # Twilio SMS & Model Backend Settings
+    # Twilio SMS Settings
     TWILIO_ACCOUNT_SID: str = os.getenv("TWILIO_ACCOUNT_SID", "")
     TWILIO_AUTH_TOKEN: str = os.getenv("TWILIO_AUTH_TOKEN", "")
     TWILIO_PHONE_NUMBER: str = os.getenv("TWILIO_PHONE_NUMBER", "")
-    TWILIO_MODEL_BACKEND_URL: str = os.getenv("TWILIO_MODEL_BACKEND_URL", "https://yamxxx1-my-fastapi-app.hf.space")
 
     # Blockchain / IPFS (Pinata) settings
     PINATA_JWT: str = os.getenv("PINATA_JWT", "")

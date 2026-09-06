@@ -8,15 +8,9 @@ from backend.app.core.config import settings
 from backend.app.api.endpoints import router as api_router
 
 from contextlib import asynccontextmanager
-from backend.app.agents.scan_agent import get_fracture_model
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Pre-warm FractureNet YOLOv8 model in memory
-    try:
-        get_fracture_model()
-    except Exception as e:
-        pass
     yield
 
 app = FastAPI(
@@ -57,7 +51,7 @@ async def root():
             "Rural Preventive Healthcare & Community Education Agent",
             "IDSP Epidemic Outbreak & Early Warning Agent",
             "Pharmacology & RxNav Drug Safety Agent",
-            "MONAI Medical Scan & Vision Agent",
+            "OpenRouter Vision & Prescription OCR Agent",
             "AI Council & Evidence Grounding Agent (80%+ Accuracy Benchmark)",
             "WHO/Tele-MANAS Mental Health Agent",
             "3D Digital Health Twin Simulation Engine",

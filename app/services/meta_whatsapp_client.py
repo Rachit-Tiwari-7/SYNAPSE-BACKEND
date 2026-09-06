@@ -46,7 +46,8 @@ async def send_whatsapp_message(to_phone: str, text: str) -> Dict[str, Any]:
             "mode": "SANDBOX_SIMULATION",
             "info": "Meta WhatsApp API token or Phone ID not set in .env. Logged to local audit stream.",
             "recipient": clean_to,
-            "preview": text[:120] + "..." if len(text) > 120 else text
+            "preview": text[:120] + "..." if len(text) > 120 else text,
+            "full_text": text
         }
 
     # Meta message text limit is 4096 characters
@@ -81,23 +82,26 @@ async def send_whatsapp_message(to_phone: str, text: str) -> Dict[str, Any]:
                         "delivered": True,
                         "mode": "SANDBOX_SIMULATION_FALLBACK",
                         "recipient": clean_to,
-                        "preview": text[:120] + "..." if len(text) > 120 else text
+                        "preview": text[:120] + "..." if len(text) > 120 else text,
+                        "full_text": text
                     }
                 else:
                     logger.error(f"[Meta WhatsApp Cloud API Error] Status {resp.status_code}: {resp.text}")
                     return {
                         "delivered": False,
                         "status_code": resp.status_code,
-                        "error": resp.text
+                        "error": resp.text,
+                        "full_text": text
                     }
         except Exception as e:
             logger.error(f"[Meta WhatsApp Cloud API Exception] {e}")
-            return {"delivered": False, "error": str(e)}
+            return {"delivered": False, "error": str(e), "full_text": text}
 
     return {
         "delivered": True,
         "mode": "META_CLOUD_API",
         "recipient": clean_to,
+        "full_text": text,
         "meta_response": last_response
     }
 

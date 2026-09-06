@@ -286,62 +286,13 @@ async def prescription_interpret_endpoint(req: PrescriptionInterpretRequest):
 
 @router.post("/scans/analyze", tags=["Vision AI"])
 async def scan_analysis_endpoint(req: ScanAnalysisRequest):
-    """MONAI lesion heatmap localization & plain-language scan/prescription explanation."""
-    modality_lower = (req.image_type or "").lower()
-    if ("prescription" in modality_lower or "rx" in modality_lower) and req.image_base64:
-        clean_b64 = req.image_base64.split(",")[-1] if "," in req.image_base64 else req.image_base64
-        try:
-            raw_bytes = base64.b64decode(clean_b64)
-            valid, err_code, err_msg, pil_img = validate_image_bytes(raw_bytes)
-            if valid and pil_img:
-                data_url = normalize_and_resize_image(pil_img)
-                ok, err_obj, ocr_data = await run_prescription_ocr(data_url)
-                if ok and ocr_data:
-                    findings = []
-                    for m in ocr_data.get("medications", []):
-                        m_name = m.get("name") or m.get("raw_name") or "Uncertain Medication"
-                        str_desc = f"Medication: {m_name}"
-                        if m.get("strength"):
-                            str_desc += f" {m['strength']}"
-                        if m.get("dosage"):
-                            str_desc += f" — {m['dosage']}"
-                        if m.get("frequency"):
-                            str_desc += f" ({m['frequency']})"
-                        if m.get("duration"):
-                            str_desc += f" x {m['duration']}"
-                        if m.get("timing"):
-                            str_desc += f" [{m['timing']}]"
-                        if m.get("is_uncertain"):
-                            str_desc += " [⚠ Needs Verification]"
-                        findings.append(str_desc)
-
-                    if not findings:
-                        findings = ["Prescription processed. No clear medications could be confidently identified."]
-
-                    requires_verif = ocr_data.get("requires_human_verification", True)
-                    return {
-                        "filename": req.filename or "prescription_scan.jpg",
-                        "modality": "prescription",
-                        "ai_diagnosis_summary": "Prescription Processed via OpenRouter Free Vision OCR",
-                        "urgency_badge": "🟡 Human Verification Required" if requires_verif else "🟢 Follow Doctor's Instructions",
-                        "clinical_findings": findings,
-                        "plain_english_explanation": (
-                            "Prescription digitized visually. All detected medication names, strengths, and dosages must be carefully verified by a human against the physical prescription before use."
-                        ),
-                        "visual_bounding_boxes": [],
-                        "has_gradcam_support": False,
-                        "is_synthetic_demonstration": False,
-                        "structured_prescription": ocr_data,
-                        "suggested_questions_for_doctor": [
-                            "Should these medications be taken before or after meals?",
-                            "Are there any potential interactions with OTC supplements?",
-                            "What should I do if a dose is accidentally missed?"
-                        ]
-                    }
-        except Exception:
-            pass
-
-    return analyze_medical_image(image_type=req.image_type, filename=req.filename, image_base64=req.image_base64)
+    """Prescription OCR & Clinical Medical Document Vision Intelligence powered by OpenRouter."""
+    from backend.app.agents.scan_agent import analyze_medical_image_async
+    return await analyze_medical_image_async(
+        image_type=req.image_type or "prescription",
+        filename=req.filename or "uploaded_scan.jpg",
+        image_base64=req.image_base64
+    )
 
 
 @router.post("/digital-twin/simulate", tags=["Digital Health Twin"])
