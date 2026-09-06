@@ -296,10 +296,12 @@ Your reported symptoms of runny nose, mild sore throat, and low-grade fever are 
     assert "after meals" in card or "after food" in card
     assert "Electral ORS" in card
 
-    # 3. Verify Shortcuts and length
+    # 3. Verify Shortcuts, Preventive Care, Disclaimer and compact length
     assert "Reply 5" in card
     assert "Reply full" in card
-    assert len(card) < 1150
+    assert "Preventive Measures" in card
+    assert "AI Disclaimer" in card
+    assert len(card) < 1400
 
 
 def test_compact_whatsapp_card_from_plain_unformatted_input():
