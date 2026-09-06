@@ -271,16 +271,39 @@ async def process_sms_inbound_webhook(
     first_token = lower_body.split()[0] if lower_body else ""
     rest_query = clean_body[len(first_token):].strip() if len(clean_body) > len(first_token) else ""
 
-    # Option 1: Symptom Triage (e.g. "1 high fever and headache", "1", "symptom fever")
+    # Option 1: Symptom Triage (e.g. "1 high fever and headache", "1", "symptom fever", "fever")
     if first_token == "1" or ("symptom" in lower_body and len(lower_body.split()) > 1):
+        from backend.app.services.i18n_service import detect_text_language
         symptom_text = rest_query if rest_query else clean_body
-        triage_res = await analyze_symptoms(text=symptom_text)
+        s_lang = detect_text_language(symptom_text, default="en")
+        is_hi = (s_lang == "hi")
         
+        triage_res = await analyze_symptoms(text=symptom_text, lang=s_lang)
         urgency = triage_res.get("triage_level", "DOCTOR_CONSULT").replace("_", " ")
-        action = triage_res.get("recommended_action", "Consult nearest healthcare professional.")
-        clean_action = format_sms_text(str(action), 160)
+        
+        # Determine probable relief medication
+        s_lower = symptom_text.lower()
+        if any(k in s_lower for k in ["fever", "headache", "body ache", "bukhar", "dard"]):
+            med = "Dolo 650: 1 tab after meals with water (max 3/day)" if not is_hi else "Dolo 650: 1 goli khane ke baad paani se (max 3/day)"
+            care = "Rest, drink ORS/fluids, sponge bath if high fever" if not is_hi else "Aaram karein, ORS/paani piyein, patti rakhein"
+        elif any(k in s_lower for k in ["vomit", "diarrhea", "loose", "dast", "ulti"]):
+            med = "Electral ORS: 1 packet in 1L clean water, sip frequently" if not is_hi else "Electral ORS: 1L paani me 1 packet gholkar piyein"
+            care = "Keep hydrated, eat light khichdi" if not is_hi else "Paani ki kami na hone dein, halka khana lein"
+        elif any(k in s_lower for k in ["acid", "gas", "jalan"]):
+            med = "Pan-40: 1 tab 30 min before breakfast empty stomach" if not is_hi else "Pan-40: 1 goli subah khali pet"
+            care = "Avoid spicy/fried food" if not is_hi else "Tala-bhuna na khayein"
+        elif any(k in s_lower for k in ["cold", "cough", "sardi", "khansi"]):
+            med = "Cetirizine 10mg: 1 tab at bedtime after food" if not is_hi else "Cetirizine 10mg: Raat ko khane ke baad 1 goli"
+            care = "Warm saline gargle & steam" if not is_hi else "Gungune paani se garare v bhaap lein"
+        else:
+            med = "Paracetamol 650mg: 1 tab after food if pain/fever" if not is_hi else "Paracetamol 650mg: Khane ke baad 1 goli"
+            care = "Ensure rest & hydration" if not is_hi else "Aaram v paryapt paani piyein"
 
-        sms_reply = f"SANJEEVNI TRIAGE [{urgency}]: {clean_action}. If severe or worsening, visit nearest PHC or call 108."
+        if is_hi:
+            sms_reply = f"SANJEEVNI TRIAGE [{urgency}]: Dawa: {med}. Dekhbhal: {care}. 24-48h me Doctor ko dikhayein. AI Disclaimer: Doctor se consult karein. Emergency SOS: 108."
+        else:
+            sms_reply = f"SANJEEVNI TRIAGE [{urgency}]: Med: {med}. Care: {care}. Consult doctor if persists > 48h. AI Disclaimer: Educational advice only. Emergency: 108."
+            
         return {
             "status": "processed",
             "type": "symptom_triage",

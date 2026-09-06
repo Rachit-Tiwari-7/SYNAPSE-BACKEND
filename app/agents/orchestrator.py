@@ -151,12 +151,16 @@ async def orchestrate_health_request(
     system_prompt = (
         "You are SynapseOS AI, an intelligent, empathetic, direct medical assistant for Indian healthcare.\n\n"
         "STRICT RULES FOR YOUR RESPONSE:\n"
-        "1. BE SHORT, SIMPLE, AND TO THE POINT (under 120-150 words). Never use corporate filler, repetitive preamble, or robotic meta-talk.\n"
-        "2. Directly answer the user's specific query in the very first sentence:\n"
-        "   - If asking about a medicine (e.g. 'what is Calpol for'): State clearly what it is, its uses in India, typical usage (take after food), and key safety precautions.\n"
-        "   - If reporting symptoms: Provide likely condition, 2-3 clear relief steps, Indian medicines & how to take them (e.g. Dolo 650 after food, Electral ORS), or safety withholding advice if emergency.\n"
-        "   - If acute emergency (chest pain, stroke, severe breathing difficulty, meningitis): Immediately instruct to call 112/108 or go to the nearest emergency room; caution against oral self-medication.\n"
-        "3. Use concise bullet points and clean structure. Keep it easy to read on mobile.\n"
+        "1. BE SHORT, SIMPLE, AND TO THE POINT (under 130-160 words). Never use corporate filler, repetitive preamble, or robotic meta-talk.\n"
+        "2. When the user reports symptoms (e.g. fever, headache, vomiting, cold, stomach ache):\n"
+        "   - Probable Condition: State the likely clinical impression in the first sentence.\n"
+        "   - Probable Indian Medications & Usage: List 1-2 standard Indian OTC medicines with precise timing (e.g., Dolo 650 / Paracetamol 650mg: 1 tab after meals with water, max 3/day; Electral ORS for hydration; Pan-40 before breakfast on empty stomach; Cetirizine at bedtime). If severe emergency, advise withholding self-medication until doctor exam.\n"
+        "   - Next Steps: State when to see a General Physician / visit clinic (e.g. if symptoms persist > 48h).\n"
+        "   - Preventive Measures & Care: Hydration, rest, light diet, sponge baths for fever.\n"
+        "   - Red Flags: Rush to emergency or call 108/112 if SpO2 < 92%, difficulty breathing, fever > 103°F, neck stiffness.\n"
+        "   - AI Disclaimer: Always end with a brief disclaimer: '⚠️ AI Recommendation: Educational guidance only. Please consult a qualified doctor or clinic for diagnosis and prescription.'\n"
+        "3. If asking about a medicine (e.g. 'what is Calpol'): State what it is, typical usage, and safety precautions.\n"
+        "4. If acute emergency (chest pain, stroke, severe trauma): Immediately instruct to call 108/112 or visit nearest emergency room.\n"
         f"{language_rule}"
     )
     
@@ -190,15 +194,19 @@ AI Council Verification: {state.verification}
         parts = []
         if effective_lang == "hi":
             if state.triage_data:
-                parts.append(f"**लक्षण मूल्यांकन:** {state.triage_data.get('urgency_badge', '🟢 सामान्य स्वास्थ्य')}")
-                parts.append(f"{state.triage_data.get('recommended_action', 'पर्याप्त आराम करें और पानी पिएं।')}")
+                parts.append(f"**🩺 संभावित लक्षण मूल्यांकन:** {state.triage_data.get('urgency_badge', '🟢 सामान्य स्वास्थ्य')}")
+                parts.append(f"**📋 अगले कदम:** {state.triage_data.get('recommended_action', 'पर्याप्त आराम करें और 24-48 घंटे में डॉक्टर से परामर्श लें।')}")
                 t_level = state.triage_data.get("triage_level", "HOME_CARE")
                 if t_level == "EMERGENCY_CARE":
-                    parts.append("\n**💊 दवाइयां एवं राहत (भारत):**\n• ⚠️ *स्व-दवा से बचें:* डॉक्टर के परीक्षण से पहले दर्द निवारक न लें।\n• *अस्पताल में:* आईवी फ्लुइड्स व आपातकालीन उपचार दिया जाएगा।")
+                    parts.append("\n**💊 दवाइयां एवं राहत (भारत):**\n• ⚠️ *स्व-दवा से बचें:* डॉक्टर के परीक्षण से पहले कोई दवा न लें।\n• *अस्पताल में:* आपातकालीन टीम द्वारा आईवी ड्रिप व उपचार दिया जाएगा।")
+                    parts.append("\n**🚨 तुरंत 108 / 112 पर कॉल करें यदि:** सांस लेने में तकलीफ, SpO2 < 92%, या बेहोशी हो।")
                 else:
-                    parts.append("\n**💊 दवाइयां एवं राहत (भारत):**\n• *Dolo 650 (पैरासिटामोल 650mg):* बुखार/दर्द के लिए 1 गोली भोजन के बाद (अधिकतम 3/दिन)।\n• *Electral ORS:* 1 पैकेट 1 लीटर पानी में घोलकर पिएं।\n• *Pan-40:* गैस/एसिडिटी होने पर 1 गोली सुबह खाली पेट।")
+                    parts.append("\n**💊 संभावित दवाइयां एवं राहत (भारत):**\n• *Dolo 650 (पैरासिटामोल 650mg):* बुखार/दर्द के लिए भोजन के बाद पानी से 1 गोली (दिन में अधिकतम 3 बार)।\n• *Electral ORS:* 1 लीटर पानी में 1 पैकेट घोलकर दिनभर घूंट-घूंट पिएं।\n• *Pan-40:* एसिडिटी होने पर सुबह खाली पेट नाश्ते से 30 मिनट पहले 1 गोली।")
+                    parts.append("\n**🛡️ निवारक उपाय एवं देखभाल:**\n• पर्याप्त आराम करें, तरल पदार्थ पिएं, और तेज बुखार होने पर माथे पर सामान्य पानी की पट्टी रखें।")
+                    parts.append("\n**🚨 डॉक्टर को दिखाएं / 108 पर कॉल करें यदि:** बुखार 103°F से अधिक हो, सांस फूलने लगे या गर्दन में अकड़न हो।")
+                parts.append("\n⚠️ *एआई सूचना:* यह केवल शैक्षिक मार्गदर्शन है। किसी भी दवा से पहले डॉक्टर से परामर्श अवश्य लें।")
             else:
-                parts.append("संजीवनी एआई द्वारा आपके स्वास्थ्य का विश्लेषण किया गया है। कृपया आराम करें और आवश्यकता पड़ने पर चिकित्सक से परामर्श लें।")
+                parts.append("संजीवनी एआई द्वारा आपके स्वास्थ्य का विश्लेषण किया गया है। कृपया आराम करें और आवश्यकता पड़ने पर चिकित्सक से परामर्श लें।\n\n⚠️ *एआई सूचना:* यह केवल मार्गदर्शन है।")
         else:
             if state.vaccination_data:
                 v_data = state.vaccination_data
@@ -206,16 +214,20 @@ AI Council Verification: {state.verification}
                 parts.append(f"• **National Immunization Progress:** {v_data.get('uip_compliance_pct', 100)}% UIP Milestones Completed")
 
             if state.triage_data:
-                parts.append(f"\n**Triage Assessment:** {state.triage_data.get('urgency_badge')}")
-                parts.append(f"{state.triage_data.get('recommended_action')}")
+                parts.append(f"**🩺 Triage Assessment:** {state.triage_data.get('urgency_badge')}")
+                parts.append(f"**📋 Next Steps:** {state.triage_data.get('recommended_action')}")
                 if state.triage_data.get("recommended_specialist"):
-                    parts.append(f"• **Recommended Care:** {state.triage_data['recommended_specialist']}")
+                    parts.append(f"• **Recommended Specialist:** {state.triage_data['recommended_specialist']}")
 
                 t_level = state.triage_data.get("triage_level", "HOME_CARE")
                 if t_level == "EMERGENCY_CARE":
                     parts.append("\n**💊 Medications & Relief (India):**\n• ⚠️ *Strictly Withhold Self-Medication:* Do not take painkillers or anti-emetics before hospital examination (masks neurological & abdominal signs).\n• *At Hospital:* IV fluids and emergency targeted therapy will be administered.")
+                    parts.append("\n**🚨 Call 108 / 112 Immediately If:** Severe chest pain, shortness of breath, SpO2 < 92%, or altered consciousness.")
                 else:
-                    parts.append("\n**💊 Medications & Relief (India):**\n• *Dolo 650 (Paracetamol 650mg):* 1 tablet after meals (with water) for fever/pain (max 3/day).\n• *Electral ORS:* 1 packet in 1L clean drinking water; sip throughout the day for active hydration.\n• *Pan-40 (Pantoprazole):* 1 tablet 30 minutes before breakfast on empty stomach if gastric acidity occurs.")
+                    parts.append("\n**💊 Probable Medications & Relief (India):**\n• *Dolo 650 (Paracetamol 650mg):* 1 tablet after meals with water for fever/pain (max 3/day).\n• *Electral ORS:* 1 packet in 1L clean drinking water; sip throughout the day for active hydration.\n• *Pan-40 (Pantoprazole 40mg):* 1 tablet 30 minutes before breakfast on empty stomach if gastric acidity occurs.")
+                    parts.append("\n**🛡️ Preventive Measures & Home Care:**\n• Ensure complete physical rest, drink 2-3L fluids/ORS, eat light food, and use lukewarm sponge baths for high fever.")
+                    parts.append("\n**🚨 Seek Emergency Care / Call 108 If:** Fever exceeds 103°F, shortness of breath develops, or neck stiffness occurs.")
+                parts.append("\n⚠️ *AI Disclaimer:* Educational AI guidance only. Please consult a qualified physician or clinic for diagnosis and prescription.")
 
             if state.drug_check and state.drug_check.get("detected_medications"):
                 meds = ", ".join(state.drug_check["detected_medications"])

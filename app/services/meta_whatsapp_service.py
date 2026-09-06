@@ -291,24 +291,32 @@ _IGNORED_DIAGNOSIS_SUBSTRINGS = [
 
 _INDIAN_RELIEF_DATABASE = [
     {
-        "keywords": ["fever", "pyrexia", "temperature", "body ache", "headache"],
-        "primary": "• Dolo 650 / Crocin (Paracetamol 650mg): 1 tab after meals (with water) for fever/pain (max 3/day).",
-        "secondary": "• Electral ORS: 1 sachet dissolved in 1L water; sip throughout day for hydration."
+        "keywords": ["fever", "pyrexia", "temperature", "body ache", "headache", "bukhar", "bukhaar", "sar dard", "badan dard"],
+        "primary_en": "• Dolo 650 / Crocin (Paracetamol 650mg): 1 tab after meals with water for fever/pain (max 3/day).",
+        "secondary_en": "• Electral ORS: 1 sachet dissolved in 1L water; sip throughout the day for active hydration.",
+        "primary_hi": "• डोलो 650 / क्रोसिन (पैरासिटामोल 650mg): बुखार/दर्द के लिए भोजन के बाद पानी से 1 गोली (दिन में अधिकतम 3 बार)।",
+        "secondary_hi": "• इलेक्ट्राल ओआरएस: 1 लीटर पानी में 1 पैकेट घोलकर दिनभर घूंट-घूंट पिएं (पानी की कमी न होने दें)।"
     },
     {
-        "keywords": ["vomit", "nausea", "dehydrat", "loose motion", "diarrhea", "stool", "gastric"],
-        "primary": "• Electral ORS: 1 packet in 1L clean drinking water; sip slowly after every episode.",
-        "secondary": "• Pan-D (Pantoprazole + Domperidone): 1 cap 30 min before breakfast (empty stomach) for nausea/acidity."
+        "keywords": ["vomit", "nausea", "dehydrat", "loose motion", "diarrhea", "stool", "gastric", "ulti", "dast", "pet kharab"],
+        "primary_en": "• Electral ORS: 1 packet in 1L clean drinking water; sip slowly after every episode to prevent dehydration.",
+        "secondary_en": "• Pan-D (Pantoprazole + Domperidone): 1 cap 30 min before breakfast (empty stomach) for nausea/acidity.",
+        "primary_hi": "• इलेक्ट्राल ओआरएस: 1 लीटर साफ पानी में 1 पैकेट घोलकर हर दस्त/उल्टी के बाद धीरे-धीरे पिएं।",
+        "secondary_hi": "• पैन-डी (Pantoprazole + Domperidone): उल्टी/एसिडिटी के लिए सुबह खाली पेट नाश्ते से 30 मिनट पहले 1 कैप्सूल।"
     },
     {
-        "keywords": ["acid", "heartburn", "reflux", "stomach burn", "indigestion", "gerd"],
-        "primary": "• Pan-40 / Pantocid (Pantoprazole 40mg): 1 tab 30 min before breakfast on empty stomach.",
-        "secondary": "• Gelusil / Digene gel: 2 tsp liquid after meals as needed."
+        "keywords": ["acid", "heartburn", "reflux", "stomach burn", "indigestion", "gerd", "gas", "pet me jalan", "acidity"],
+        "primary_en": "• Pan-40 / Pantocid (Pantoprazole 40mg): 1 tab 30 min before breakfast on empty stomach.",
+        "secondary_en": "• Gelusil / Digene gel: 2 tsp liquid after meals as needed for immediate acid relief.",
+        "primary_hi": "• पैन-40 / पेंटोसिड (Pantoprazole 40mg): सुबह खाली पेट नाश्ते से 30 मिनट पहले 1 गोली।",
+        "secondary_hi": "• जेलुसिल / डाइजीन सिरप: एसिडिटी व जलन होने पर भोजन के बाद 2 चम्मच पिएं।"
     },
     {
-        "keywords": ["cold", "sneeze", "runny nose", "congestion", "throat", "cough", "rhinitis"],
-        "primary": "• Cetirizine 10mg (Cetzine / Okacet): 1 tab at bedtime after food for runny nose/sneezes.",
-        "secondary": "• Warm saline gargles & steam: 3 times daily; lozenges (Strepsils) after meals."
+        "keywords": ["cold", "sneeze", "runny nose", "congestion", "throat", "cough", "rhinitis", "sardi", "jukham", "khansi", "gala"],
+        "primary_en": "• Cetirizine 10mg (Cetzine / Okacet): 1 tab at bedtime after food for runny nose/sneezes.",
+        "secondary_en": "• Warm saline gargles & steam: 3 times daily; lozenges (Strepsils) after meals.",
+        "primary_hi": "• सेट्रीजीन 10mg (Cetzine / Okacet): रात को सोने से पहले भोजन के बाद 1 गोली (जुकाम/छींक के लिए)।",
+        "secondary_hi": "• गुनगुने नमक के पानी से गरारे व भाप: दिन में 3 बार लें; गले में खराश के लिए स्ट्रेप्सिल्स।"
     }
 ]
 
@@ -323,10 +331,10 @@ def _truncate_clean(text: str, max_len: int = 100) -> str:
     truncated = text[:max_len].rsplit(' ', 1)[0]
     return truncated.rstrip(' ,;:-') + '...'
 
-def _extract_diagnosis_condition(text: str) -> str:
-    # 1. Match explicit Risk Profile / Diagnosis / Suspected Condition with markdown resilience
+def _extract_diagnosis_condition(text: str, is_hindi: bool = False) -> str:
+    # 1. Match explicit Risk Profile / Diagnosis / Suspected Condition in English or Hindi
     m = re.search(
-        r'(?:\*\*|\*|•|\-)?\s*(?:Risk Profile|Suspected (?:Condition|Diagnosis|Infection)|Primary Diagnosis|Diagnosis)\s*(?:\*\*|\*)?\s*[:\-]\s*([^\n]+)',
+        r'(?:\*\*|\*|•|\-)?\s*(?:Risk Profile|Suspected (?:Condition|Diagnosis|Infection)|Primary Diagnosis|Diagnosis|संभावित (?:निदान|स्थिति|बीमारी|संक्रमण)|निदान|लक्षण मूल्यांकन)\s*(?:\*\*|\*)?\s*[:\-]\s*([^\n]+)',
         text,
         re.IGNORECASE
     )
@@ -338,22 +346,22 @@ def _extract_diagnosis_condition(text: str) -> str:
             return val
 
     # 2. Match Executive Summary & Suspected Diagnosis section
-    m_exec_sec = re.search(r'(?:Executive Summary & Suspected Diagnosis|Suspected Diagnosis)[^\n]*\n+([^\n]+)', text, re.IGNORECASE)
+    m_exec_sec = re.search(r'(?:Executive Summary & Suspected Diagnosis|Suspected Diagnosis|संभावित निदान एवं सारांश|संभावित निदान)[^\n]*\n+([^\n]+)', text, re.IGNORECASE)
     if m_exec_sec:
         val = _clean_card_text(m_exec_sec.group(1))
         if '.' in val:
             val = val.split('.')[0].strip()
         if not any(ign in val.lower() for ign in _IGNORED_DIAGNOSIS_SUBSTRINGS) and len(val) > 4:
-            m_cond = re.search(r'(?:consistent with|indicative of|suggestive of|including|risk for)\s+([^.\n]+)', val, re.IGNORECASE)
+            m_cond = re.search(r'(?:consistent with|indicative of|suggestive of|including|risk for|का संकेत|के लक्षण)\s+([^.\n]+)', val, re.IGNORECASE)
             if m_cond:
                 return _clean_card_text(m_cond.group(1))
             return val
 
     # 3. Match within Executive Summary text
-    exec_m = re.search(r'(?:Executive Summary|Summary)[^\n]*\n+([^\n]+(?:\n[^\n]+)?)', text, re.IGNORECASE)
+    exec_m = re.search(r'(?:Executive Summary|Summary|सारांश)[^\n]*\n+([^\n]+(?:\n[^\n]+)?)', text, re.IGNORECASE)
     if exec_m:
         exec_text = exec_m.group(1)
-        m_cond = re.search(r'(?:consistent with|indicative of|suggestive of|including|risk for)\s+([^.\n]+)', exec_text, re.IGNORECASE)
+        m_cond = re.search(r'(?:consistent with|indicative of|suggestive of|including|risk for|का संकेत|के लक्षण)\s+([^.\n]+)', exec_text, re.IGNORECASE)
         if m_cond:
             c = _clean_card_text(m_cond.group(1))
             if len(c) > 4 and not any(ign in c.lower() for ign in _IGNORED_DIAGNOSIS_SUBSTRINGS):
@@ -363,26 +371,30 @@ def _extract_diagnosis_condition(text: str) -> str:
             return first_sentence
 
     # 4. Fallback on Critical Flags Detected
-    m_flags = re.search(r'Critical Flags Detected:\*?\s*([^\n]+)', text, re.IGNORECASE)
+    m_flags = re.search(r'(?:Critical Flags Detected|गंभीर लक्षण):\*?\s*([^\n]+)', text, re.IGNORECASE)
     if m_flags:
         flags = _clean_card_text(m_flags.group(1))
-        return f"Acute Clinical Presentation ({flags})"
+        return f"तीव्र लक्षण ({flags})" if is_hindi else f"Acute Clinical Presentation ({flags})"
 
-    return "Multi-agent clinical audit completed by AI Council."
+    return "संजीवनी एआई द्वारा संपूर्ण स्वास्थ्य परीक्षण संपन्न।" if is_hindi else "Multi-agent clinical audit completed by AI Council."
 
-def _extract_medications_guidance(text: str, is_emergency: bool) -> List[str]:
+def _extract_medications_guidance(text: str, is_emergency: bool, is_hindi: bool = False) -> List[str]:
     meds: List[str] = []
     text_lower = text.lower()
 
     # Check for explicit medical prohibition / withholding rule (e.g., in CNS or surgical emergency)
-    if re.search(r'(?:do not self-medicate|strictly avoid|withhold(?:ing)?\s+symptomatic relief|avoid taking|withhold self-medication)', text_lower):
-        meds.append("• ⚠️ Withhold self-medication: Do not take painkillers or anti-emetics (masks neurological & abdominal signs).")
-        meds.append("• At Hospital: IV fluids & targeted emergency medications will be administered.")
+    if re.search(r'(?:do not self-medicate|strictly avoid|withhold(?:ing)?\s+symptomatic relief|avoid taking|withhold self-medication|दवा न लें|स्व-दवा से बचें)', text_lower):
+        if is_hindi:
+            meds.append("• ⚠️ स्व-दवा से बचें: डॉक्टर की जांच से पहले दर्द निवारक या उल्टी की दवा न लें (लक्षण छिप सकते हैं)।")
+            meds.append("• अस्पताल में: डॉक्टर द्वारा आईवी ड्रिप व आवश्यक आपातकालीन उपचार दिया जाएगा।")
+        else:
+            meds.append("• ⚠️ Withhold self-medication: Do not take painkillers or anti-emetics (masks neurological & abdominal signs).")
+            meds.append("• At Hospital: IV fluids & targeted emergency medications will be administered.")
         return meds
 
-    # Check if text contains structured Indian medicine section
+    # Check if text contains structured Indian medicine section in the response
     med_sec = re.search(
-        r'(?:Recommended Medications & Relief \(India\)|Medications & Symptom Relief \(India\)|Medications & Relief|Medications|Drug Safety)[^\n]*\n+([\s\S]*?)(?=\n\n|\n\*[0-9]|\n[#*•]{1,3}\s+[A-Z]|\Z)',
+        r'(?:Recommended Medications & Relief \(India\)|Medications & Symptom Relief \(India\)|Medications & Relief|Medications|दवाइयां एवं राहत \(भारत\)|दवाइयां एवं राहत|Drug Safety)[^\n]*\n+([\s\S]*?)(?=\n\n|\n\*[0-9]|\n[#*•]{1,3}\s+[A-Z\u0900-\u097F]|\Z)',
         text,
         re.IGNORECASE
     )
@@ -390,7 +402,7 @@ def _extract_medications_guidance(text: str, is_emergency: bool) -> List[str]:
         lines = med_sec.group(1).split('\n')
         for l in lines:
             cl = _clean_card_text(l)
-            if len(cl) > 12 and any(term in cl.lower() for term in ["dolo", "crocin", "paracetamol", "electral", "ors", "cetzine", "pan", "pantoprazole", "tablet", "tab", "mg", "gargle"]):
+            if len(cl) > 12 and any(term in cl.lower() for term in ["dolo", "crocin", "paracetamol", "electral", "ors", "cetzine", "pan", "pantoprazole", "tablet", "tab", "mg", "gargle", "डोलो", "पैरासिटामोल", "इलेक्ट्राल", "ओआरएस", "गोली"]):
                 meds.append(f"• {cl}")
                 if len(meds) >= 2:
                     break
@@ -401,18 +413,26 @@ def _extract_medications_guidance(text: str, is_emergency: bool) -> List[str]:
     # Fallback to Indian OTC relief database based on symptoms in text
     for entry in _INDIAN_RELIEF_DATABASE:
         if any(k in text_lower for k in entry["keywords"]):
-            meds.append(entry["primary"])
-            if entry.get("secondary"):
-                meds.append(entry["secondary"])
+            meds.append(entry["primary_hi"] if is_hindi else entry["primary_en"])
+            if entry.get("secondary_hi" if is_hindi else "secondary_en"):
+                meds.append(entry["secondary_hi"] if is_hindi else entry["secondary_en"])
             break
 
     if not meds:
         if is_emergency:
-            meds.append("• ⚠️ Withhold oral medicines until in-person doctor examination.")
-            meds.append("• Hospital team will establish immediate IV access & therapy.")
+            if is_hindi:
+                meds.append("• ⚠️ डॉक्टर की जांच से पहले मौखिक दवाएं न लें।")
+                meds.append("• अस्पताल की टीम तुरंत आवश्यक आपातकालीन चिकित्सा शुरू करेगी।")
+            else:
+                meds.append("• ⚠️ Withhold oral medicines until in-person doctor examination.")
+                meds.append("• Hospital team will establish immediate IV access & therapy.")
         else:
-            meds.append("• Dolo 650 (Paracetamol 650mg): 1 tab after meals (with water) for fever/pain (max 3/day).")
-            meds.append("• Electral ORS: Sip for hydration; consult doctor before taking antibiotics.")
+            if is_hindi:
+                meds.append("• डोलो 650 (पैरासिटामोल 650mg): बुखार/दर्द के लिए भोजन के बाद 1 गोली (दिन में अधिकतम 3 बार)।")
+                meds.append("• इलेक्ट्राल ओआरएस: शरीर में पानी बनाए रखने के लिए घूंट-घूंट पिएं; एंटीबायोटिक डॉक्टर की सलाह पर ही लें।")
+            else:
+                meds.append("• Dolo 650 (Paracetamol 650mg): 1 tab after meals (with water) for fever/pain (max 3/day).")
+                meds.append("• Electral ORS: Sip for hydration; consult doctor before taking antibiotics.")
 
     return meds[:2]
 
@@ -493,7 +513,7 @@ def format_compact_whatsapp_card(text: str, lang: str = "en") -> str:
     lines = [f"{badge}\n━━━━━━━━━━━━━━━━━━━━"]
 
     # 2. Suspected Diagnosis
-    condition = _extract_diagnosis_condition(text)
+    condition = _extract_diagnosis_condition(text, is_hindi=is_hindi)
     condition = _truncate_clean(condition, 110)
     diag_label = "🩺 संभावित निदान:" if is_hindi else "🩺 Suspected Diagnosis:"
     lines.append(f"{diag_label} {condition}")
@@ -546,13 +566,29 @@ def format_compact_whatsapp_card(text: str, lang: str = "en") -> str:
                 lines.append(f"{act_header}\n1. Schedule consultation with a General Physician within 24–48 hours.\n2. Maintain complete rest and active fluid hydration.")
 
     # 4. Medications & Relief Available in India (with how to take)
-    meds = _extract_medications_guidance(text, is_emergency)
+    meds = _extract_medications_guidance(text, is_emergency, is_hindi=is_hindi)
     med_header = "\n💊 दवाइयां एवं राहत (भारत):" if is_hindi else "\n💊 Medications & Relief (India):"
     lines.append(med_header)
     for m_line in meds:
         lines.append(m_line)
 
-    # 5. Red Flags
+    # 5. Preventive Measures & Home Care
+    prev_header = "\n🛡️ निवारक उपाय एवं देखभाल:" if is_hindi else "\n🛡️ Preventive Measures & Care:"
+    if is_emergency:
+        prev_tips = (
+            "• मरीज को शांत व आरामदायक स्थिति में रखें; अनावश्यक हलचल से बचाएं।\n• आपातकालीन चिकित्सा टीम के आने तक मुंह से कुछ न खिलाएं।"
+            if is_hindi else
+            "• Keep patient calm and resting in a comfortable position.\n• Do not feed anything orally until emergency team arrives."
+        )
+    else:
+        prev_tips = (
+            "• पर्याप्त आराम करें, 2-3 लीटर पानी/ओआरएस पिएं और ताजा हल्का भोजन लें।\n• तेज बुखार में सामान्य पानी की पट्टियां (स्पंजिंग) करें।"
+            if is_hindi else
+            "• Complete rest, drink 2-3L clean water/ORS, and eat light fresh meals.\n• Apply lukewarm sponge compresses for fever; maintain good room ventilation."
+        )
+    lines.append(f"{prev_header}\n{prev_tips}")
+
+    # 6. Red Flags
     red_flags = []
     for title, desc in bullet_items:
         clean_title = title.strip()
@@ -574,7 +610,15 @@ def format_compact_whatsapp_card(text: str, lang: str = "en") -> str:
         else:
             lines.append(f"{rf_header}\n• Shortness of breath, SpO2 < 92%, neck stiffness, or fever > 103°F")
 
-    # 6. Interactive Quick Action Buttons / Shortcuts (Normal Text, No Markdown)
+    # 7. AI Medical Recommendation Disclaimer
+    disclaimer = (
+        "\n⚠️ एआई सूचना: यह एक एआई स्वास्थ्य मार्गदर्शन है। किसी भी दवा या उपचार से पूर्व डॉक्टर से परामर्श अवश्य लें।"
+        if is_hindi else
+        "\n⚠️ AI Disclaimer: AI educational recommendation only. Consult a registered doctor/visit clinic before taking medications."
+    )
+    lines.append(disclaimer)
+
+    # 8. Interactive Quick Action Buttons / Shortcuts (Normal Text, No Markdown)
     lines.append("\n━━━━━━━━━━━━━━━━━━━━")
     if is_hindi:
         lines.append("👉 त्वरित शॉर्टकट:")
