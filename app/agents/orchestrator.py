@@ -6,7 +6,7 @@ Coordinates Safety Gate -> Intent Routing -> Specialist Agents (Triage, Drug, Sc
 
 import time
 import uuid
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from backend.app.core.state import SynapseOSState, AgentTraceStep
 from backend.app.core.safety_router import evaluate_safety
 from backend.app.agents.drug_agent import drug_agent_node
@@ -43,23 +43,35 @@ def detect_intent(text: str) -> str:
         return "SYMPTOM_TRIAGE"
 
 
+from backend.app.services.i18n_service import detect_text_language, LANGUAGE_NAME_MAP
+
+
 async def orchestrate_health_request(
     message: str,
     channel: str = "web",
     session_id: str = None,
-    user_id: str = "demo_user"
+    user_id: str = "demo_user",
+    language: Optional[str] = None
 ) -> SynapseOSState:
     """
     Executes the full multi-agent DAG workflow for any user message.
+    Supports auto-detected and user-selected languages (Hindi, Bengali, Tamil, etc.).
     """
     if not session_id:
         session_id = str(uuid.uuid4())[:8]
+
+    # Auto-detect language if not explicitly provided or default 'en'
+    if not language or language == "en":
+        effective_lang = detect_text_language(message, default="en")
+    else:
+        effective_lang = language.lower()
 
     state = SynapseOSState(
         session_id=session_id,
         user_id=user_id,
         channel=channel,
-        input_text=message
+        input_text=message,
+        language=effective_lang
     )
 
     # 1. Deterministic Safety Gate Check
@@ -124,19 +136,33 @@ async def orchestrate_health_request(
 
     # 4. Synthesize Final Consolidated Response via LLM (Groq / OpenRouter)
     synth_start = time.time()
+    target_lang_name = LANGUAGE_NAME_MAP.get(effective_lang, "English")
+    
+    if effective_lang != "en":
+        language_rule = (
+            f"4. CRITICAL MANDATORY LANGUAGE: The user's query is in {target_lang_name} (code: '{effective_lang}'). "
+            f"You MUST write the ENTIRE clinical response in {target_lang_name} using its native script (e.g., Devanagari for Hindi). "
+            f"Never respond in English when {target_lang_name} is requested or used. Standard Indian medicine names (e.g. Dolo 650, Electral ORS, Pan-40, Cetirizine) "
+            f"and helpline numbers (112, 108) may remain in Latin or native script, but all instructions, warnings, headers, and advice MUST be in {target_lang_name}."
+        )
+    else:
+        language_rule = "4. Language: Respond in clear, accessible English."
+
     system_prompt = (
         "You are SynapseOS AI, an intelligent, empathetic, direct medical assistant for Indian healthcare.\n\n"
         "STRICT RULES FOR YOUR RESPONSE:\n"
-        "1. BE SHORT, SIMPLE, AND TO THE POINT (under 120-150 words). Never use corporate filler, repetitive preamble, or robotic meta-talk (like 'The primary clinical impression is that this is a general informational inquiry...').\n"
+        "1. BE SHORT, SIMPLE, AND TO THE POINT (under 120-150 words). Never use corporate filler, repetitive preamble, or robotic meta-talk.\n"
         "2. Directly answer the user's specific query in the very first sentence:\n"
-        "   - If asking about a medicine (e.g. 'what is Calpol for'): State clearly what it is, its uses in India, typical usage (take after food), and key safety precautions (e.g. max daily dose, don't combine with same generics).\n"
+        "   - If asking about a medicine (e.g. 'what is Calpol for'): State clearly what it is, its uses in India, typical usage (take after food), and key safety precautions.\n"
         "   - If reporting symptoms: Provide likely condition, 2-3 clear relief steps, Indian medicines & how to take them (e.g. Dolo 650 after food, Electral ORS), or safety withholding advice if emergency.\n"
         "   - If acute emergency (chest pain, stroke, severe breathing difficulty, meningitis): Immediately instruct to call 112/108 or go to the nearest emergency room; caution against oral self-medication.\n"
-        "3. Use concise bullet points and clean structure. Keep it easy to read on mobile."
+        "3. Use concise bullet points and clean structure. Keep it easy to read on mobile.\n"
+        f"{language_rule}"
     )
     
     agent_findings_context = f"""
 Patient Query: {message}
+Language: {target_lang_name} ({effective_lang})
 Vaccination Status: {state.vaccination_data}
 Preventive Health Data: {state.preventive_data}
 Outbreak Surveillance: {state.outbreak_data}
@@ -147,7 +173,7 @@ AI Council Verification: {state.verification}
 """
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Consolidate these specialist agent findings for the patient:\n{agent_findings_context}"}
+        {"role": "user", "content": f"Consolidate these specialist agent findings for the patient in {target_lang_name}:\n{agent_findings_context}"}
     ]
 
     llm_synthesis = await call_llm(messages, temperature=0.3, max_tokens=900)
@@ -156,60 +182,46 @@ AI Council Verification: {state.verification}
         state.final_response = llm_synthesis
         state.trace.append(AgentTraceStep(
             agent_name="Swarm Synthesis & Reasoning Engine (Groq/OpenRouter)",
-            action="Synthesized multi-agent findings into comprehensive clinical guidance",
+            action=f"Synthesized multi-agent findings in {target_lang_name}",
             duration_ms=int((time.time() - synth_start) * 1000)
         ))
     else:
         # Structured fallback if no LLM key configured
         parts = []
-        if state.vaccination_data:
-            v_data = state.vaccination_data
-            parts.append(f"**💉 UIP Vaccination Status:** Next Due: **{v_data.get('next_vaccine_due')}** ({v_data.get('next_due_date')})")
-            parts.append(f"• **National Immunization Progress:** {v_data.get('uip_compliance_pct', 100)}% UIP Milestones Completed")
-            parts.append(f"• **Registry Node:** {v_data.get('registry', 'U-WIN MoHFW')}")
-
-        if state.preventive_data and state.preventive_data.get("active_guide"):
-            p_guide = state.preventive_data["active_guide"]
-            parts.append(f"\n**🌿 Preventive Healthcare Directive: {p_guide.get('title')}**")
-            for step in p_guide.get("actionable_steps", [])[:3]:
-                parts.append(f"• {step}")
-            parts.append(f"⚠️ *Red Flags:* {p_guide.get('red_flags')}")
-
-        if state.outbreak_data and state.outbreak_data.get("data"):
-            o_data = state.outbreak_data["data"]
-            parts.append(f"\n**🚨 District Outbreak Alert ({o_data.get('district')}):** {o_data.get('risk_badge')}")
-            parts.append(f"• **Active Pathogen:** {o_data.get('primary_outbreak')} ({o_data.get('velocity_pct')})")
-            parts.append(f"• **Advisory:** {o_data.get('preventive_advisory')}")
-
-        if state.triage_data:
-            parts.append(f"\n**Triage Assessment:** {state.triage_data.get('urgency_badge')}")
-            parts.append(f"{state.triage_data.get('recommended_action')}")
-            if state.triage_data.get("recommended_specialist"):
-                parts.append(f"• **Recommended Care:** {state.triage_data['recommended_specialist']}")
-
-            t_level = state.triage_data.get("triage_level", "HOME_CARE")
-            if t_level == "EMERGENCY_CARE":
-                parts.append("\n**💊 Medications & Relief (India):**\n• ⚠️ *Strictly Withhold Self-Medication:* Do not take painkillers or anti-emetics before hospital examination (masks neurological & abdominal signs).\n• *At Hospital:* IV fluids and emergency targeted therapy will be administered.")
+        if effective_lang == "hi":
+            if state.triage_data:
+                parts.append(f"**लक्षण मूल्यांकन:** {state.triage_data.get('urgency_badge', '🟢 सामान्य स्वास्थ्य')}")
+                parts.append(f"{state.triage_data.get('recommended_action', 'पर्याप्त आराम करें और पानी पिएं।')}")
+                t_level = state.triage_data.get("triage_level", "HOME_CARE")
+                if t_level == "EMERGENCY_CARE":
+                    parts.append("\n**💊 दवाइयां एवं राहत (भारत):**\n• ⚠️ *स्व-दवा से बचें:* डॉक्टर के परीक्षण से पहले दर्द निवारक न लें।\n• *अस्पताल में:* आईवी फ्लुइड्स व आपातकालीन उपचार दिया जाएगा।")
+                else:
+                    parts.append("\n**💊 दवाइयां एवं राहत (भारत):**\n• *Dolo 650 (पैरासिटामोल 650mg):* बुखार/दर्द के लिए 1 गोली भोजन के बाद (अधिकतम 3/दिन)।\n• *Electral ORS:* 1 पैकेट 1 लीटर पानी में घोलकर पिएं।\n• *Pan-40:* गैस/एसिडिटी होने पर 1 गोली सुबह खाली पेट।")
             else:
-                parts.append("\n**💊 Medications & Relief (India):**\n• *Dolo 650 (Paracetamol 650mg):* 1 tablet after meals (with water) for fever/pain (max 3/day).\n• *Electral ORS:* 1 packet in 1L clean drinking water; sip throughout the day for active hydration.\n• *Pan-40 (Pantoprazole):* 1 tablet 30 minutes before breakfast on empty stomach if gastric acidity occurs.")
+                parts.append("संजीवनी एआई द्वारा आपके स्वास्थ्य का विश्लेषण किया गया है। कृपया आराम करें और आवश्यकता पड़ने पर चिकित्सक से परामर्श लें।")
+        else:
+            if state.vaccination_data:
+                v_data = state.vaccination_data
+                parts.append(f"**💉 UIP Vaccination Status:** Next Due: **{v_data.get('next_vaccine_due')}** ({v_data.get('next_due_date')})")
+                parts.append(f"• **National Immunization Progress:** {v_data.get('uip_compliance_pct', 100)}% UIP Milestones Completed")
 
-        if state.drug_check and state.drug_check.get("detected_medications"):
-            meds = ", ".join(state.drug_check["detected_medications"])
-            parts.append(f"\n**Medication Scan:** Detected {meds}")
-            if state.drug_check.get("interactions_count", 0) > 0:
-                for item in state.drug_check["interactions"]:
-                    parts.append(f"⚠️ **Warning ({item.get('severity', 'Risk')}):** {item.get('effect')} — *{item.get('recommended_action')}*")
-            else:
-                parts.append("✅ No known high-risk drug-to-drug interactions detected.")
+            if state.triage_data:
+                parts.append(f"\n**Triage Assessment:** {state.triage_data.get('urgency_badge')}")
+                parts.append(f"{state.triage_data.get('recommended_action')}")
+                if state.triage_data.get("recommended_specialist"):
+                    parts.append(f"• **Recommended Care:** {state.triage_data['recommended_specialist']}")
 
-        if state.scan_analysis:
-            parts.append(f"\n**Imaging Summary:** {state.scan_analysis.get('ai_diagnosis_summary')}")
-            parts.append(f"*{state.scan_analysis.get('plain_english_explanation')}*")
+                t_level = state.triage_data.get("triage_level", "HOME_CARE")
+                if t_level == "EMERGENCY_CARE":
+                    parts.append("\n**💊 Medications & Relief (India):**\n• ⚠️ *Strictly Withhold Self-Medication:* Do not take painkillers or anti-emetics before hospital examination (masks neurological & abdominal signs).\n• *At Hospital:* IV fluids and emergency targeted therapy will be administered.")
+                else:
+                    parts.append("\n**💊 Medications & Relief (India):**\n• *Dolo 650 (Paracetamol 650mg):* 1 tablet after meals (with water) for fever/pain (max 3/day).\n• *Electral ORS:* 1 packet in 1L clean drinking water; sip throughout the day for active hydration.\n• *Pan-40 (Pantoprazole):* 1 tablet 30 minutes before breakfast on empty stomach if gastric acidity occurs.")
 
-        if state.verification:
-            parts.append(f"\n**AI Council Consensus:** {state.verification.get('consensus_confidence_score', 95)}% Agreement ({state.verification.get('council_verdict')})")
+            if state.drug_check and state.drug_check.get("detected_medications"):
+                meds = ", ".join(state.drug_check["detected_medications"])
+                parts.append(f"\n**Medication Scan:** Detected {meds}")
 
-        state.final_response = "\n\n".join(parts)
+        state.final_response = "\n\n".join(parts) if parts else "Health assessment completed by Synapse-OS Swarm."
 
     state.suggested_actions = [
         "View 3D Digital Health Twin",
@@ -219,3 +231,4 @@ AI Council Verification: {state.verification}
     ]
 
     return state
+

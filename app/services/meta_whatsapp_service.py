@@ -252,28 +252,10 @@ def parse_language_selection(text: str) -> Optional[str]:
 
 
 def detect_language_script(text: str) -> str:
-    """Detects Indian regional language script from unicode code points."""
-    for char in text:
-        cp = ord(char)
-        if 0x0900 <= cp <= 0x097F:
-            return "hi"  # Devanagari (Hindi/Marathi)
-        elif 0x0980 <= cp <= 0x09FF:
-            return "bn"  # Bengali / Assamese
-        elif 0x0B80 <= cp <= 0x0BFF:
-            return "ta"  # Tamil
-        elif 0x0C00 <= cp <= 0x0C7F:
-            return "te"  # Telugu
-        elif 0x0A80 <= cp <= 0x0AFF:
-            return "gu"  # Gujarati
-        elif 0x0C80 <= cp <= 0x0CFF:
-            return "kn"  # Kannada
-        elif 0x0D00 <= cp <= 0x0D7F:
-            return "ml"  # Malayalam
-        elif 0x0A00 <= cp <= 0x0A7F:
-            return "pa"  # Punjabi
-        elif 0x0B00 <= cp <= 0x0B7F:
-            return "or"  # Odia
-    return "en"
+    """Detects Indian regional language script or transliteration from text."""
+    from backend.app.services.i18n_service import detect_text_language
+    return detect_text_language(text, default="en")
+
 
 import re
 
@@ -463,51 +445,76 @@ def format_compact_generic_qa_card(text: str) -> str:
     return "\n".join(lines).strip()
 
 
-def format_compact_whatsapp_card(text: str) -> str:
+def format_compact_whatsapp_card(text: str, lang: str = "en") -> str:
     """
     Transforms verbose multi-agent diagnostic audit into a punchy, normal plain-text WhatsApp card (no markdown).
     Extracts: Triage Badge, Suspected Diagnosis, Council Consensus, Top 2 Actions, Medications & Relief (India), Red Flags, and Quick Shortcuts.
+    Localizes section titles, badges, and quick shortcuts if user language is Hindi.
     """
     if not text or len(text.strip()) < 180:
-        return format_response_for_whatsapp(text, compact=False)
+        return format_response_for_whatsapp(text, compact=False, lang=lang)
+
+    from backend.app.services.i18n_service import detect_text_language
+
+    effective_lang = lang or "en"
+    if effective_lang == "en":
+        effective_lang = detect_text_language(text, default="en")
+
+    is_hindi = (effective_lang == "hi")
 
     # 1. Determine Triage Status Badge (Normal Text, No Markdown)
     text_lower = text.lower()
     is_emergency = False
-    badge = "🟡 SYNAPSE-OS CLINICAL ASSESSMENT"
-    if "🔴" in text or "patient status: emergency" in text_lower or "emergency care" in text_lower or "emergency triage" in text_lower:
-        badge = "🔴 SYNAPSE-OS EMERGENCY TRIAGE — CRITICAL"
-        is_emergency = True
-    elif "🟢" in text or "patient status: home care" in text_lower or "home self-care" in text_lower or ("home care" in text_lower and "doctor consult" not in text_lower):
-        badge = "🟢 SYNAPSE-OS HOME CARE & MONITORING"
-    elif "🟡" in text or "doctor consult" in text_lower:
-        badge = "🟡 SYNAPSE-OS DOCTOR CONSULTATION RECOMMENDED"
-    elif "emergency" in text_lower and any(k in text_lower for k in ["emergency room", "emergency department", "call 112", "call 108"]):
-        badge = "🔴 SYNAPSE-OS EMERGENCY TRIAGE — CRITICAL"
-        is_emergency = True
+    if is_hindi:
+        badge = "🟡 संजीवनी स्वास्थ्य मूल्यांकन"
+        if "🔴" in text or "patient status: emergency" in text_lower or "emergency care" in text_lower or "emergency triage" in text_lower or "आपातकालीन" in text:
+            badge = "🔴 संजीवनी आपातकालीन ट्राइएज — अति गंभीर"
+            is_emergency = True
+        elif "🟢" in text or "patient status: home care" in text_lower or "home self-care" in text_lower or "घरेलू देखभाल" in text:
+            badge = "🟢 संजीवनी घरेलू देखभाल एवं निगरानी"
+        elif "🟡" in text or "doctor consult" in text_lower or "डॉक्टर परामर्श" in text:
+            badge = "🟡 संजीवनी डॉक्टर परामर्श आवश्यक"
+        elif "emergency" in text_lower and any(k in text_lower for k in ["emergency room", "emergency department", "call 112", "call 108"]):
+            badge = "🔴 संजीवनी आपातकालीन ट्राइएज — अति गंभीर"
+            is_emergency = True
+    else:
+        badge = "🟡 SANJEEVNI CLINICAL ASSESSMENT"
+        if "🔴" in text or "patient status: emergency" in text_lower or "emergency care" in text_lower or "emergency triage" in text_lower:
+            badge = "🔴 SANJEEVNI EMERGENCY TRIAGE — CRITICAL"
+            is_emergency = True
+        elif "🟢" in text or "patient status: home care" in text_lower or "home self-care" in text_lower or ("home care" in text_lower and "doctor consult" not in text_lower):
+            badge = "🟢 SANJEEVNI HOME CARE & MONITORING"
+        elif "🟡" in text or "doctor consult" in text_lower:
+            badge = "🟡 SANJEEVNI DOCTOR CONSULTATION RECOMMENDED"
+        elif "emergency" in text_lower and any(k in text_lower for k in ["emergency room", "emergency department", "call 112", "call 108"]):
+            badge = "🔴 SANJEEVNI EMERGENCY TRIAGE — CRITICAL"
+            is_emergency = True
 
     lines = [f"{badge}\n━━━━━━━━━━━━━━━━━━━━"]
 
     # 2. Suspected Diagnosis
     condition = _extract_diagnosis_condition(text)
     condition = _truncate_clean(condition, 110)
-    lines.append(f"🩺 Suspected Diagnosis: {condition}")
+    diag_label = "🩺 संभावित निदान:" if is_hindi else "🩺 Suspected Diagnosis:"
+    lines.append(f"{diag_label} {condition}")
 
     # Extract Council confidence
     conf_match = (
-        re.search(r'([0-9]{1,3}%)\s*(?:Consensus|Confidence|Agreement)', text, re.IGNORECASE) or
-        re.search(r'(?:Confidence|Consensus|Agreement)[:\-]?\*?\s*([0-9]{1,3}%)', text, re.IGNORECASE) or
+        re.search(r'([0-9]{1,3}%)\s*(?:Consensus|Confidence|Agreement|सहमति)', text, re.IGNORECASE) or
+        re.search(r'(?:Confidence|Consensus|Agreement|सहमति)[:\-]?\*?\s*([0-9]{1,3}%)', text, re.IGNORECASE) or
         re.search(r'Confidence:\*?\s*(\w+)', text, re.IGNORECASE)
     )
     if conf_match:
-        lines.append(f"📊 Council Consensus: {conf_match.group(1)} Agreement")
+        conf_str = conf_match.group(1)
+        cons_label = f"📊 काउंसिल सहमति: {conf_str} सहमति" if is_hindi else f"📊 Council Consensus: {conf_str} Agreement"
+        lines.append(cons_label)
 
     # 3. Immediate Actions (Max 2 concise steps)
     actions = []
     bullet_items = re.findall(r'\*\s+\*?([A-Za-z\s]+)[:\-]\*?\s*([^\n]+)', text)
     for title, desc in bullet_items:
         clean_title = title.strip()
-        if any(k in clean_title.lower() for k in ["seek", "emergency", "care", "rest", "hydration", "neck", "consult"]):
+        if any(k in clean_title.lower() for k in ["seek", "emergency", "care", "rest", "hydration", "neck", "consult", "doctor", "medicine"]):
             clean_d = _clean_card_text(desc)
             clean_d = _truncate_clean(clean_d, 95)
             actions.append(f"{clean_title}: {clean_d}")
@@ -515,25 +522,33 @@ def format_compact_whatsapp_card(text: str) -> str:
                 break
 
     if not actions:
-        action_match = re.search(r'(?:Immediate Action Plan|Action Plan)[^\n]*\n+([^\n]+)', text, re.IGNORECASE)
+        action_match = re.search(r'(?:Immediate Action Plan|Action Plan|तत्काल आवश्यक कदम|प्राथमिक सलाह)[^\n]*\n+([^\n]+)', text, re.IGNORECASE)
         if action_match:
             act_line = _clean_card_text(action_match.group(1))
             if len(act_line) > 8:
                 actions.append(_truncate_clean(act_line, 95))
 
+    act_header = "\n📋 तत्काल कदम:" if is_hindi else "\n📋 Immediate Actions:"
     if actions:
-        lines.append("\n📋 Immediate Actions:")
+        lines.append(act_header)
         for i, act in enumerate(actions[:2], 1):
             lines.append(f"{i}. {act}")
     else:
         if is_emergency:
-            lines.append("\n📋 Immediate Actions:\n1. Call 112 / 108 or proceed to nearest hospital emergency immediately.\n2. Do not drive yourself; have a companion accompany you.")
+            if is_hindi:
+                lines.append(f"{act_header}\n1. तुरंत 112 / 108 पर कॉल करें या नजदीकी अस्पताल के इमरजेंसी वार्ड जाएं।\n2. स्वयं गाड़ी न चलाएं; किसी को साथ लेकर जाएं।")
+            else:
+                lines.append(f"{act_header}\n1. Call 112 / 108 or proceed to nearest hospital emergency immediately.\n2. Do not drive yourself; have a companion accompany you.")
         else:
-            lines.append("\n📋 Immediate Actions:\n1. Schedule consultation with a General Physician within 24–48 hours.\n2. Maintain complete rest and active fluid hydration.")
+            if is_hindi:
+                lines.append(f"{act_header}\n1. 24–48 घंटे के भीतर डॉक्टर (फिजिशियन) से परामर्श लें।\n2. पर्याप्त आराम करें और ओआरएस / तरल पदार्थ पिएं।")
+            else:
+                lines.append(f"{act_header}\n1. Schedule consultation with a General Physician within 24–48 hours.\n2. Maintain complete rest and active fluid hydration.")
 
     # 4. Medications & Relief Available in India (with how to take)
     meds = _extract_medications_guidance(text, is_emergency)
-    lines.append("\n💊 Medications & Relief (India):")
+    med_header = "\n💊 दवाइयां एवं राहत (भारत):" if is_hindi else "\n💊 Medications & Relief (India):"
+    lines.append(med_header)
     for m_line in meds:
         lines.append(m_line)
 
@@ -548,29 +563,50 @@ def format_compact_whatsapp_card(text: str) -> str:
             if len(red_flags) >= 2:
                 break
 
+    rf_header = "\n🚨 तुरंत आपातकालीन सहायता लें / 108 पर कॉल करें यदि:" if is_hindi else "\n🚨 Seek Emergency Care / Call 108 If:"
     if red_flags:
-        lines.append("\n🚨 Seek Emergency Care / Call 108 If:")
+        lines.append(rf_header)
         for rf in red_flags:
             lines.append(f"• {rf}")
     else:
-        lines.append("\n🚨 Seek Emergency Care If:\n• Shortness of breath, SpO2 < 92%, neck stiffness, or fever > 103°F")
+        if is_hindi:
+            lines.append(f"{rf_header}\n• सांस लेने में तकलीफ, SpO2 < 92%, गर्दन में अकड़न, या तेज बुखार (> 103°F)")
+        else:
+            lines.append(f"{rf_header}\n• Shortness of breath, SpO2 < 92%, neck stiffness, or fever > 103°F")
 
     # 6. Interactive Quick Action Buttons / Shortcuts (Normal Text, No Markdown)
     lines.append("\n━━━━━━━━━━━━━━━━━━━━")
-    lines.append("👉 Quick Shortcuts:")
-    lines.append("• Reply 5 to find PM-JAY doctors & book slot")
-    lines.append("• Reply sos for instant emergency ambulance (108)")
-    lines.append("• Reply full for the complete clinical report")
-    lines.append("\n🌿 Powered by Synapse-OS Multi-Agent Swarm")
+    if is_hindi:
+        lines.append("👉 त्वरित शॉर्टकट:")
+        lines.append("• डॉक्टर खोजने व स्लॉट बुक करने के लिए 5 भेजें")
+        lines.append("• तत्काल एम्बुलेंस (108) के लिए sos भेजें")
+        lines.append("• पूरी विस्तृत रिपोर्ट के लिए full भेजें")
+        lines.append("\n🌿 संजीवनी-ओएस मल्टी-एजेंट द्वारा संचालित")
+    else:
+        lines.append("👉 Quick Shortcuts:")
+        lines.append("• Reply 5 to find PM-JAY doctors & book slot")
+        lines.append("• Reply sos for instant emergency ambulance (108)")
+        lines.append("• Reply full for the complete clinical report")
+        lines.append("\n🌿 Powered by Sanjeevni-OS Multi-Agent Swarm")
 
     card_str = "\n".join(lines)
     return strip_markdown_to_plain_text(card_str)
 
 
-def format_response_for_whatsapp(text: str, compact: bool = True) -> str:
+def format_response_for_whatsapp(text: str, compact: bool = True, lang: str = "en") -> str:
     """Formats clinical response as clean, normal plain text without markdown for WhatsApp."""
+    from backend.app.services.i18n_service import detect_text_language
+
+    effective_lang = lang or "en"
+    if effective_lang == "en":
+        effective_lang = detect_text_language(text, default="en")
+
+    is_hindi = (effective_lang == "hi")
+
     if not text:
-        return "Thank you for consulting Synapse-OS. Please monitor your health and consult a physician if needed."
+        if is_hindi:
+            return "संजीवनी-ओएस से परामर्श लेने के लिए धन्यवाद। कृपया अपने स्वास्थ्य की निगरानी करें और आवश्यकतानुसार डॉक्टर से सलाह लें।"
+        return "Thank you for consulting Sanjeevni-OS. Please monitor your health and consult a physician if needed."
 
     text_lower = text.lower()
     # Check if this is a general informational Q&A without active symptoms
@@ -579,10 +615,11 @@ def format_response_for_whatsapp(text: str, compact: bool = True) -> str:
         "what is ", "what is calpol", "benefits of ", "how does ", "why is "
     ]) and not any(k in text_lower for k in ["patient status: emergency", "fever", "severe pain", "vomiting", "diarrhea"])
 
+    footer = "🌿 संजीवनी-ओएस मल्टी-एजेंट द्वारा संचालित" if is_hindi else "🌿 Powered by Sanjeevni-OS Multi-Agent Swarm"
+
     if is_general_inquiry:
         plain = strip_markdown_to_plain_text(text)
-        footer = "🌿 Powered by Synapse-OS Multi-Agent Swarm"
-        if not plain.endswith(footer):
+        if not plain.endswith("संचालित") and not plain.endswith("Swarm"):
             plain += f"\n\n{footer}"
         return plain
 
@@ -591,15 +628,14 @@ def format_response_for_whatsapp(text: str, compact: bool = True) -> str:
         any(k in text_lower for k in [
             "patient status:", "triage level:", "triage & outbreak", 
             "clinical assessment & care guidance", "symptom triage", "suspected condition"
-        ]) or ("🔴" in text and "emergency" in text_lower)
+        ]) or ("🔴" in text and ("emergency" in text_lower or "आपातकालीन" in text))
     )
 
     if compact and is_triage_audit:
-        return format_compact_whatsapp_card(text)
+        return format_compact_whatsapp_card(text, lang=effective_lang)
 
     plain = strip_markdown_to_plain_text(text)
-    footer = "🌿 Powered by Synapse-OS Multi-Agent Swarm"
-    if not plain.endswith(footer):
+    if not plain.endswith("संचालित") and not plain.endswith("Swarm"):
         plain += f"\n\n{footer}"
     return plain
 
@@ -711,7 +747,7 @@ async def process_whatsapp_inbound_webhook(payload: Dict[str, Any]) -> Dict[str,
                     ok, err_obj, ocr_data = await run_prescription_ocr(data_url)
                     if ok and ocr_data:
                         interp = await interpret_prescription(ocr_data=ocr_data, lang=user_lang or "en")
-                        reply_text = format_prescription_for_whatsapp(ocr_data=ocr_data, interpretation=interp)
+                        reply_text = format_prescription_for_whatsapp(ocr_data=ocr_data, interpretation=interp, lang=user_lang or "en")
                         dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=reply_text)
                         return {
                             "status": "processed",
@@ -1154,32 +1190,51 @@ async def process_whatsapp_inbound_webhook(payload: Dict[str, Any]) -> Dict[str,
         agent_result = await orchestrate_health_request(
             message=clean_text,
             channel="whatsapp",
-            user_id=sender_phone
+            user_id=sender_phone,
+            language=user_lang
         )
         session["context"]["last_full_report"] = agent_result.final_response
-        response_text = format_response_for_whatsapp(agent_result.final_response, compact=True)
+        response_text = format_response_for_whatsapp(agent_result.final_response, compact=True, lang=user_lang or "en")
         trace_steps = len(agent_result.trace)
         intent = agent_result.detected_intent
     except Exception as exc:
         logger.error(f"[WhatsApp Swarm Exception] Fallback triggered: {exc}", exc_info=True)
-        response_text = (
-            "⚠️ SANJEEVNI CLINICAL ADVISORY\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "We encountered a temporary processing delay with our live clinical reasoning swarm. Your symptom query has been recorded.\n\n"
-            "🚨 Immediate Emergency Guidance:\n"
-            "If you or the patient have severe symptoms (intense chest pain, breathlessness, high fever, or confusion):\n"
-            "• Call 112 (National Emergency) or 108 (Ambulance) immediately.\n"
-            "• Mental Health: Call 14416 (Tele-MANAS 24x7).\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "👉 Quick Shortcuts:\n"
-            "• Reply menu for directory and schedules\n"
-            "• Reply sos for instant ambulance dispatch\n\n"
-            "🌿 Powered by Sanjeevni-OS"
-        )
+        is_hindi = ((user_lang or "en") == "hi")
+        if is_hindi:
+            response_text = (
+                "⚠️ संजीवनी स्वास्थ्य सलाह\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "हमारे क्लीनिकल सिस्टम में अस्थायी विलंब हुआ है। आपका लक्षण प्रश्न दर्ज कर लिया गया है।\n\n"
+                "🚨 तत्काल आपातकालीन निर्देश:\n"
+                "यदि मरीज को गंभीर लक्षण हैं (सीने में तेज दर्द, सांस लेने में तकलीफ, या तेज बुखार):\n"
+                "• तुरंत 112 (राष्ट्रीय आपातकालीन) या 108 (एम्बुलेंस) पर कॉल करें।\n"
+                "• मानसिक स्वास्थ्य सहायता: 14416 (टेली-मानस 24x7)।\n\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "👉 त्वरित शॉर्टकट:\n"
+                "• मुख्य मेनू के लिए menu भेजें\n"
+                "• 108 एम्बुलेंस के लिए sos भेजें\n\n"
+                "🌿 संजीवनी-ओएस मल्टी-एजेंट द्वारा संचालित"
+            )
+        else:
+            response_text = (
+                "⚠️ SANJEEVNI CLINICAL ADVISORY\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "We encountered a temporary processing delay with our live clinical reasoning swarm. Your symptom query has been recorded.\n\n"
+                "🚨 Immediate Emergency Guidance:\n"
+                "If you or the patient have severe symptoms (intense chest pain, breathlessness, high fever, or confusion):\n"
+                "• Call 112 (National Emergency) or 108 (Ambulance) immediately.\n"
+                "• Mental Health: Call 14416 (Tele-MANAS 24x7).\n\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "👉 Quick Shortcuts:\n"
+                "• Reply menu for directory and schedules\n"
+                "• Reply sos for instant ambulance dispatch\n\n"
+                "🌿 Powered by Sanjeevni-OS"
+            )
         trace_steps = 0
         intent = "fallback_emergency_advisory"
 
     dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=response_text)
+
 
     return {
         "status": "processed",

@@ -136,7 +136,7 @@ CLINICAL_I18N_STRINGS = {
 
 def translate_clinical_message(key: str, lang: str = "hi") -> str:
     """Translates key clinical warnings into regional Indian & global languages."""
-    lang_code = lang.lower()
+    lang_code = (lang or "en").lower()
     lang_dict = CLINICAL_I18N_STRINGS.get(lang_code, CLINICAL_I18N_STRINGS["hi"])
     return lang_dict.get(key, CLINICAL_I18N_STRINGS["en"].get(key, ""))
 
@@ -144,3 +144,71 @@ def translate_clinical_message(key: str, lang: str = "hi") -> str:
 def get_supported_languages() -> List[Dict[str, str]]:
     """Returns list of supported Indian and international languages."""
     return SUPPORTED_LANGUAGES
+
+
+LANGUAGE_NAME_MAP = {
+    "en": "English",
+    "hi": "Hindi (हिन्दी)",
+    "bn": "Bengali (বাংলা)",
+    "ta": "Tamil (தமிழ்)",
+    "te": "Telugu (తెలుగు)",
+    "mr": "Marathi (मराठी)",
+    "gu": "Gujarati (ગુજરાતી)",
+    "kn": "Kannada (ಕನ್ನಡ)",
+    "ml": "Malayalam (മലയാളം)",
+    "pa": "Punjabi (ਪੰਜਾਬੀ)",
+    "or": "Odia (ଓଡ଼ିଆ)",
+    "es": "Spanish (Español)"
+}
+
+HINGLISH_KEYWORDS = [
+    "bukhar", "khansi", "sar dard", "sardard", "sir dard", "dard", "dawa", "davai",
+    "tabiyat", "pet dard", "chakar", "chakkar", "ulti", "dast", "gala", "sir me dard",
+    "kaise le", "kya karu", "kya kare", "sevan", "khana", "khana khane ke baad",
+    "khali pet", "pariwar", "bimar", "bimari", "doctor ko dikhana", "ilaaj"
+]
+
+def detect_text_language(text: str, default: str = "en") -> str:
+    """
+    Detects language code from unicode script points or common transliterated keywords.
+    Supported: hi, bn, ta, te, mr, gu, kn, ml, pa, or, en.
+    """
+    if not text:
+        return default
+    
+    # 1. Unicode code point ranges for Indic scripts
+    for char in text:
+        cp = ord(char)
+        if 0x0900 <= cp <= 0x097F:
+            return "hi"  # Devanagari (Hindi/Marathi)
+        elif 0x0980 <= cp <= 0x09FF:
+            return "bn"  # Bengali / Assamese
+        elif 0x0B80 <= cp <= 0x0BFF:
+            return "ta"  # Tamil
+        elif 0x0C00 <= cp <= 0x0C7F:
+            return "te"  # Telugu
+        elif 0x0A80 <= cp <= 0x0AFF:
+            return "gu"  # Gujarati
+        elif 0x0C80 <= cp <= 0x0CFF:
+            return "kn"  # Kannada
+        elif 0x0D00 <= cp <= 0x0D7F:
+            return "ml"  # Malayalam
+        elif 0x0A00 <= cp <= 0x0A7F:
+            return "pa"  # Punjabi
+        elif 0x0B00 <= cp <= 0x0B7F:
+            return "or"  # Odia
+
+    # 2. Latin transliterated Hinglish keywords
+    text_lower = text.lower()
+    for kw in HINGLISH_KEYWORDS:
+        if re_search_word(kw, text_lower):
+            return "hi"
+
+    return default
+
+
+def re_search_word(word: str, text: str) -> bool:
+    """Helper to match word boundary in Latin text."""
+    import re
+    return bool(re.search(r'\b' + re.escape(word) + r'\b', text))
+

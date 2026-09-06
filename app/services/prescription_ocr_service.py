@@ -710,9 +710,13 @@ async def interpret_prescription(
     """
     Downstream Medical Triage & Clinical Explanation layer powered by Groq / LLM.
     Explains the likely underlying disease/condition, purpose of each medication,
-    administration schedules, home-care tips, questions for doctor, and red flags.
+    administration schedules, home-care tips, questions for doctor, and red flags in user's language.
     """
     from backend.app.services.llm_service import call_llm_json
+    from backend.app.services.i18n_service import detect_text_language, LANGUAGE_NAME_MAP
+
+    effective_lang = (lang or "en").lower()
+    target_lang_name = LANGUAGE_NAME_MAP.get(effective_lang, "English")
 
     meds = ocr_data.get("medications", [])
     meds_summary = []
@@ -729,6 +733,17 @@ async def interpret_prescription(
     doctor_info = ocr_data.get("doctor", {})
     doctor_text = f"{doctor_info.get('name', 'Doctor')} ({doctor_info.get('specialization', 'General')})"
 
+    if effective_lang != "en":
+        lang_rule = (
+            f"7. CRITICAL LANGUAGE MANDATE: The patient's requested language is '{target_lang_name}' (code: '{effective_lang}'). "
+            f"You MUST write ALL clinical explanation fields ('likely_condition', 'plain_language_summary', 'purpose', 'timing', 'generic_savings_tip', 'precautions_and_rules', 'red_flag_warnings') "
+            f"in {target_lang_name} using its native script (e.g. Devanagari for Hindi). Do NOT generate English descriptions. "
+            f"Standard Indian medicine brand names (e.g. Dolo 650, Augmentin, Pan-40, Cetirizine) can remain in English for exact pharmacy identification, "
+            f"but all clinical advice, timings (before/after food), precautions, and rules MUST be in {target_lang_name}."
+        )
+    else:
+        lang_rule = "7. Language: Write in clear, compassionate English."
+
     system_prompt = (
         "You are the SynapseOS Clinical Pharmacology & Medical Triage Assistant.\n"
         "Your role is to help patients understand their doctor prescriptions in clear, compassionate, and medically grounded language.\n\n"
@@ -739,7 +754,7 @@ async def interpret_prescription(
         "4. Identify Jan Aushadhi / PMBJP low-cost generic equivalents for branded medicines to help the patient save costs in India.\n"
         "5. Provide home-care advice, antibiotic completion rules (if applicable), and key precautions (e.g. avoid dairy/alcohol, hydration).\n"
         "6. Provide red flag warnings on when to seek urgent emergency care or call 108.\n"
-        f"7. If language requested is '{lang}' and not 'en', localize all explanations into that language while keeping standard drug names recognizable.\n"
+        f"{lang_rule}\n"
         "8. Return ONLY a valid JSON object matching the requested schema."
     )
 
@@ -747,7 +762,7 @@ async def interpret_prescription(
         f"Doctor: {doctor_text}\n"
         f"Diagnosis noted on scan: {diagnosis_text}\n"
         f"Prescribed Medications:\n{meds_text}\n\n"
-        "Provide your clinical explanation as a JSON object with keys:\n"
+        f"Provide your clinical explanation in {target_lang_name} as a JSON object with keys:\n"
         "{\n"
         '  "likely_condition": "Short title of condition/illness being treated",\n'
         '  "plain_language_summary": "1-2 sentences explaining the treatment plan",\n'
@@ -765,28 +780,52 @@ async def interpret_prescription(
         "}"
     )
 
-    fallback_dict = {
-        "likely_condition": ocr_data.get("diagnosis") or "General Outpatient Medical Treatment",
-        "plain_language_summary": "Your prescription contains medications aimed at managing your symptoms. Always follow your doctor's exact instructions.",
-        "medication_guide": [
-            {
-                "medicine": m.get("name") or m.get("raw_name") or "Prescribed Medicine",
-                "purpose": "Symptom relief as directed by your physician.",
-                "timing": f"{m.get('frequency', 'As directed')} ({m.get('timing', 'after meals')})",
-                "generic_alternative": "Ask pharmacist for Jan Aushadhi generic"
-            }
-            for m in meds
-        ],
-        "generic_savings_tip": "Ask at PM Jan Aushadhi Kendra for generic equivalents to save 50-80% on medicine costs.",
-        "precautions_and_rules": [
-            "Complete the full prescribed course without skipping doses.",
-            "Take with plenty of water after meals unless specified for empty stomach."
-        ],
-        "red_flag_warnings": [
-            "High persistent fever > 102°F or shortness of breath.",
-            "Severe dizziness, rash, or persistent vomiting."
-        ]
-    }
+    if effective_lang == "hi":
+        fallback_dict = {
+            "likely_condition": ocr_data.get("diagnosis") or "सामान्य बाह्य रोगी चिकित्सा उपचार",
+            "plain_language_summary": "आपकी पर्ची में लक्षणों के उपचार हेतु दवाइयां निर्धारित हैं। कृपया डॉक्टर के निर्देशों का पालन करें।",
+            "medication_guide": [
+                {
+                    "medicine": m.get("name") or m.get("raw_name") or "निर्धारित दवा",
+                    "purpose": "डॉक्टर के निर्देशानुसार लक्षण नियंत्रण हेतु।",
+                    "timing": f"{m.get('frequency', 'निर्देशानुसार')} ({m.get('timing', 'भोजन के बाद')})",
+                    "generic_alternative": "जन औषधि केंद्र से जेनेरिक दवा पूछें"
+                }
+                for m in meds
+            ],
+            "generic_savings_tip": "दवाओं के खर्च में 50-80% बचत के लिए प्रधानमंत्री जन औषधि केंद्र से जेनेरिक विकल्प लें।",
+            "precautions_and_rules": [
+                "बिना डॉक्टर की सलाह के दवा का पूरा कोर्स बंद न करें।",
+                "दवाइयां पर्याप्त पानी के साथ समय पर लें।"
+            ],
+            "red_flag_warnings": [
+                "तेज बुखार (> 102°F) या सांस लेने में तकलीफ होने पर तुरंत अस्पताल जाएं।",
+                "गंभीर चक्कर, शरीर पर दाने या लगातार उल्टी होना।"
+            ]
+        }
+    else:
+        fallback_dict = {
+            "likely_condition": ocr_data.get("diagnosis") or "General Outpatient Medical Treatment",
+            "plain_language_summary": "Your prescription contains medications aimed at managing your symptoms. Always follow your doctor's exact instructions.",
+            "medication_guide": [
+                {
+                    "medicine": m.get("name") or m.get("raw_name") or "Prescribed Medicine",
+                    "purpose": "Symptom relief as directed by your physician.",
+                    "timing": f"{m.get('frequency', 'As directed')} ({m.get('timing', 'after meals')})",
+                    "generic_alternative": "Ask pharmacist for Jan Aushadhi generic"
+                }
+                for m in meds
+            ],
+            "generic_savings_tip": "Ask at PM Jan Aushadhi Kendra for generic equivalents to save 50-80% on medicine costs.",
+            "precautions_and_rules": [
+                "Complete the full prescribed course without skipping doses.",
+                "Take with plenty of water after meals unless specified for empty stomach."
+            ],
+            "red_flag_warnings": [
+                "High persistent fever > 102°F or shortness of breath.",
+                "Severe dizziness, rash, or persistent vomiting."
+            ]
+        }
 
     try:
         res = await call_llm_json(
@@ -805,7 +844,8 @@ async def interpret_prescription(
 
 def format_prescription_for_whatsapp(
     ocr_data: Dict[str, Any],
-    interpretation: Dict[str, Any]
+    interpretation: Dict[str, Any],
+    lang: str = "en"
 ) -> str:
     """
     Formats the prescription interpretation for WhatsApp strictly complying with AGENTS.md:
@@ -819,8 +859,19 @@ def format_prescription_for_whatsapp(
     - Seek Emergency Care / Call 108 If
     - Quick Shortcuts
     - Powered by Sanjeevni-OS Multi-Agent Swarm
+    Supports native localization for Hindi and regional languages.
     """
-    condition = interpretation.get("likely_condition") or ocr_data.get("diagnosis") or "Outpatient Medical Regimen"
+    from backend.app.services.i18n_service import detect_text_language
+
+    effective_lang = lang or "en"
+    if effective_lang == "en":
+        # Check if interpretation content itself has Hindi/Indic script
+        interp_sample = interpretation.get("likely_condition", "") + " " + interpretation.get("plain_language_summary", "")
+        effective_lang = detect_text_language(interp_sample, default="en")
+
+    is_hindi = (effective_lang == "hi")
+
+    condition = interpretation.get("likely_condition") or ocr_data.get("diagnosis") or ("सामयिक चिकित्सीय उपचार" if is_hindi else "Outpatient Medical Regimen")
     doctor_info = ocr_data.get("doctor", {})
     doc_name = doctor_info.get("name")
     doc_header = f"👨‍⚕️ {doc_name}\n" if doc_name and doc_name.lower() != "doctor" else ""
@@ -829,20 +880,21 @@ def format_prescription_for_whatsapp(
     med_guide = interpretation.get("medication_guide", [])
     if med_guide:
         for idx, item in enumerate(med_guide[:4], 1):
-            name = item.get("medicine", "Medication")
-            timing = item.get("timing") or item.get("how_to_take", "As directed")
+            name = item.get("medicine", "दवा" if is_hindi else "Medication")
+            timing = item.get("timing") or item.get("how_to_take", "निर्देशानुसार" if is_hindi else "As directed")
             purpose = item.get("purpose", "")
             p_str = f" ({purpose})" if purpose else ""
             med_lines.append(f"{idx}. {name}{p_str} — {timing}")
     else:
         for idx, m in enumerate(ocr_data.get("medications", [])[:4], 1):
-            m_name = m.get("name") or m.get("raw_name") or "Medication"
+            m_name = m.get("name") or m.get("raw_name") or ("दवा" if is_hindi else "Medication")
             strength = f" {m['strength']}" if m.get("strength") else ""
             freq = f" {m['frequency']}" if m.get("frequency") else ""
-            timing = f" ({m['timing']})" if m.get("timing") else " (after meals)"
+            timing = f" ({m['timing']})" if m.get("timing") else (" (भोजन के बाद)" if is_hindi else " (after meals)")
             med_lines.append(f"{idx}. {m_name}{strength} —{freq}{timing}")
 
-    meds_formatted = "\n".join(med_lines) if med_lines else "Follow doctor's verbal instructions."
+    default_meds_text = "डॉक्टर के मौखिक निर्देशों का पालन करें।" if is_hindi else "Follow doctor's verbal instructions."
+    meds_formatted = "\n".join(med_lines) if med_lines else default_meds_text
 
     # Generic alternatives / savings tip
     savings_tip = interpretation.get("generic_savings_tip")
@@ -853,55 +905,105 @@ def format_prescription_for_whatsapp(
             if alt and alt.lower() not in ("none", "null", "n/a", "not available"):
                 generic_alts.append(f"• {item.get('medicine')}: {alt}")
 
-    precautions = interpretation.get("precautions_and_rules") or interpretation.get("home_care_and_lifestyle", [
-        "Complete full medicine course without skipping doses.",
-        "Take on time with clean water."
-    ])
+    if is_hindi:
+        default_precautions = [
+            "बिना डॉक्टर की सलाह के दवा का पूरा कोर्स बंद न करें।",
+            "दवाइयां पर्याप्त पानी के साथ समय पर लें।"
+        ]
+        default_red_flags = [
+            "तेज बुखार (> 102°F) या सांस लेने में तकलीफ।",
+            "शरीर पर दाने, लगातार उल्टी या अत्यधिक कमजोरी।"
+        ]
+    else:
+        default_precautions = [
+            "Complete full medicine course without skipping doses.",
+            "Take on time with clean water."
+        ]
+        default_red_flags = [
+            "Persistent high fever > 102°F or breathing difficulty.",
+            "Severe allergic rash, swelling, or persistent vomiting."
+        ]
+
+    precautions = interpretation.get("precautions_and_rules") or interpretation.get("home_care_and_lifestyle", default_precautions)
     precautions_formatted = "\n".join(f"• {p}" for p in precautions[:2])
 
-    red_flags = interpretation.get("red_flag_warnings", [
-        "Persistent high fever > 102°F or breathing difficulty.",
-        "Severe allergic rash, swelling, or persistent vomiting."
-    ])
+    red_flags = interpretation.get("red_flag_warnings", default_red_flags)
     red_flags_formatted = "\n".join(f"• {rf}" for rf in red_flags[:2])
 
     # Construct clean plain text (NO MARKDOWN)
-    lines = [
-        "📋 SANJEEVNI PRESCRIPTION & HEALTH SUMMARY",
-        "━━━━━━━━━━━━━━━━━━━━",
-        f"🩺 Suspected Diagnosis: {condition}",
-        "",
-        "📊 Council Consensus: 94% Concordance",
-        "",
-        "📋 Immediate Actions:",
-        f"{precautions_formatted}",
-        "",
-        "💊 Medications & Relief (India):",
-        f"{meds_formatted}"
-    ]
+    if is_hindi:
+        lines = [
+            "📋 संजीवनी पर्ची एवं स्वास्थ्य सारांश",
+            "━━━━━━━━━━━━━━━━━━━━",
+            f"🩺 संभावित निदान: {condition}",
+            "",
+            "📊 काउंसिल सहमति: 94% सहमति",
+            "",
+            "📋 तत्काल आवश्यक कदम:",
+            f"{precautions_formatted}",
+            "",
+            "💊 दवाइयां एवं सेवन विधि (भारत):",
+            f"{meds_formatted}"
+        ]
 
-    if generic_alts:
-        lines.append("")
-        lines.append("💰 Low-Cost Jan Aushadhi Equivalent:")
-        for g in generic_alts[:2]:
-            lines.append(g)
-    elif savings_tip and savings_tip.lower() != "none":
-        lines.append("")
-        lines.append(f"💰 Generic Savings Tip: {savings_tip}")
+        if generic_alts:
+            lines.append("")
+            lines.append("💰 जन औषधि बचत विकल्प:")
+            for g in generic_alts[:2]:
+                lines.append(g)
+        elif savings_tip and savings_tip.lower() != "none":
+            lines.append("")
+            lines.append(f"💰 जन औषधि बचत टिप: {savings_tip}")
 
-    lines.extend([
-        "",
-        f"🚨 Seek Emergency Care / Call 108 If:\n{red_flags_formatted}",
-        "",
-        "👉 Quick Shortcuts:",
-        "Reply 5 — Find nearby PM-JAY clinic / pharmacy",
-        "Reply sos — Call 108 Ambulance",
-        "Reply menu — Main Menu",
-        "",
-        "🌿 Powered by Sanjeevni-OS Multi-Agent Swarm"
-    ])
+        lines.extend([
+            "",
+            f"🚨 तुरंत आपातकालीन सहायता लें / 108 पर कॉल करें यदि:\n{red_flags_formatted}",
+            "",
+            "👉 त्वरित शॉर्टकट:",
+            "• डॉक्टर / जन औषधि केंद्र खोजने के लिए 5 भेजें",
+            "• तत्काल 108 एम्बुलेंस के लिए sos भेजें",
+            "• मुख्य मेनू के लिए menu भेजें",
+            "",
+            "🌿 संजीवनी-ओएस मल्टी-एजेंट द्वारा संचालित"
+        ])
+    else:
+        lines = [
+            "📋 SANJEEVNI PRESCRIPTION & HEALTH SUMMARY",
+            "━━━━━━━━━━━━━━━━━━━━",
+            f"🩺 Suspected Diagnosis: {condition}",
+            "",
+            "📊 Council Consensus: 94% Concordance",
+            "",
+            "📋 Immediate Actions:",
+            f"{precautions_formatted}",
+            "",
+            "💊 Medications & Relief (India):",
+            f"{meds_formatted}"
+        ]
+
+        if generic_alts:
+            lines.append("")
+            lines.append("💰 Low-Cost Jan Aushadhi Equivalent:")
+            for g in generic_alts[:2]:
+                lines.append(g)
+        elif savings_tip and savings_tip.lower() != "none":
+            lines.append("")
+            lines.append(f"💰 Generic Savings Tip: {savings_tip}")
+
+        lines.extend([
+            "",
+            f"🚨 Seek Emergency Care / Call 108 If:\n{red_flags_formatted}",
+            "",
+            "👉 Quick Shortcuts:",
+            "• Reply 5 to find PM-JAY clinic / pharmacy",
+            "• Reply sos for 108 Ambulance",
+            "• Reply menu for Main Menu",
+            "",
+            "🌿 Powered by Sanjeevni-OS Multi-Agent Swarm"
+        ])
 
     raw_text = "\n".join(lines)
     # Strip any stray markdown syntax
     clean = raw_text.replace("**", "").replace("*", "").replace("`", "").replace("___", "").replace("##", "")
     return clean.strip()
+

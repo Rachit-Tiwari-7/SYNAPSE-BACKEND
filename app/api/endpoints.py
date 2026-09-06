@@ -78,10 +78,12 @@ class OrchestrateRequest(BaseModel):
     channel: str = Field(default="web")
     session_id: Optional[str] = None
     user_id: Optional[str] = "demo_user"
+    language: Optional[str] = Field(default="en", example="hi")
 
 
 class TriageRequest(BaseModel):
     symptoms: str = Field(..., example="Chest pain radiating to left arm with shortness of breath")
+    language: Optional[str] = Field(default="en", example="hi")
 
 
 class DrugCheckRequest(BaseModel):
@@ -89,9 +91,10 @@ class DrugCheckRequest(BaseModel):
 
 
 class ScanAnalysisRequest(BaseModel):
-    image_type: str = Field(default="chest_xray")
-    filename: Optional[str] = "chest_xray_scan.jpg"
+    image_type: str = Field(default="prescription")
+    filename: Optional[str] = "uploaded_prescription.jpg"
     image_base64: Optional[str] = None
+    language: Optional[str] = Field(default="en", example="hi")
 
 
 class PDFReportRequest(BaseModel):
@@ -117,20 +120,22 @@ async def orchestrate_endpoint(req: OrchestrateRequest):
         message=req.message,
         channel=req.channel,
         session_id=req.session_id,
-        user_id=req.user_id
+        user_id=req.user_id,
+        language=req.language
     )
 
 
 @router.post("/triage", tags=["Clinical Intelligence"])
 async def triage_endpoint(req: TriageRequest):
     """Clinical symptom triage categorization into Emergency, Doctor Consult, or Home Care."""
-    return await analyze_symptoms(req.symptoms)
+    return await analyze_symptoms(req.symptoms, lang=req.language)
 
 
 @router.post("/drugs/check", tags=["Clinical Intelligence"])
 async def drug_check_endpoint(req: DrugCheckRequest):
     """NIH RxNav drug lookup and high-risk drug-drug interaction checker."""
     return await evaluate_drug_safety(req.query_or_meds)
+
 
 
 OCR_ERROR_STATUS_MAP = {
@@ -276,7 +281,7 @@ async def prescription_interpret_endpoint(req: PrescriptionInterpretRequest):
     precautionary tips, and emergency red flags.
     """
     interpretation = await interpret_prescription(ocr_data=req.prescription_data, lang=req.lang or "en")
-    whatsapp_text = format_prescription_for_whatsapp(ocr_data=req.prescription_data, interpretation=interpretation)
+    whatsapp_text = format_prescription_for_whatsapp(ocr_data=req.prescription_data, interpretation=interpretation, lang=req.lang or "en")
     return {
         "success": True,
         "interpretation": interpretation,
@@ -291,8 +296,10 @@ async def scan_analysis_endpoint(req: ScanAnalysisRequest):
     return await analyze_medical_image_async(
         image_type=req.image_type or "prescription",
         filename=req.filename or "uploaded_scan.jpg",
-        image_base64=req.image_base64
+        image_base64=req.image_base64,
+        lang=req.language or "en"
     )
+
 
 
 @router.post("/digital-twin/simulate", tags=["Digital Health Twin"])

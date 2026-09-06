@@ -482,7 +482,7 @@ def test_api_scans_analyze_prescription_integration():
         "requires_human_verification": False
     }
 
-    with patch("backend.app.api.endpoints.run_prescription_ocr") as mock_ocr_call:
+    with patch("backend.app.agents.scan_agent.run_prescription_ocr") as mock_ocr_call:
         mock_ocr_call.return_value = (True, None, mock_ocr)
 
         resp = client.post(
@@ -622,3 +622,50 @@ def test_api_prescription_interpret_endpoint():
         assert data["interpretation"]["likely_condition"] == "Viral Pharyngitis (Sore Throat)"
         assert "whatsapp_formatted" in data
         assert "SANJEEVNI PRESCRIPTION & HEALTH SUMMARY" in data["whatsapp_formatted"]
+
+
+def test_hindi_prescription_whatsapp_formatting():
+    """Test Hindi prescription formatting produces localized Devanagari headers."""
+    from backend.app.services.prescription_ocr_service import format_prescription_for_whatsapp
+
+    mock_ocr = {
+        "diagnosis": "वायरल बुखार (Viral Fever)",
+        "medications": [{"name": "Dolo 650", "strength": "650mg", "timing": "भोजन के बाद"}]
+    }
+    mock_interp = {
+        "likely_condition": "वायरल संक्रमण एवं बुखार",
+        "plain_language_summary": "वायरल बुखार के लक्षणों का उपचार।",
+        "medication_guide": [
+            {
+                "medicine": "Dolo 650",
+                "purpose": "बुखार और बदन दर्द से राहत।",
+                "timing": "1 गोली भोजन के बाद"
+            }
+        ],
+        "precautions_and_rules": ["दवा का पूरा कोर्स लें।", "पर्याप्त पानी पिएं।"],
+        "red_flag_warnings": ["तेज बुखार 102°F से अधिक होना।"]
+    }
+
+    text = format_prescription_for_whatsapp(mock_ocr, mock_interp, lang="hi")
+    assert "📋 संजीवनी पर्ची एवं स्वास्थ्य सारांश" in text
+    assert "🩺 संभावित निदान: वायरल संक्रमण एवं बुखार" in text
+    assert "📊 काउंसिल सहमति: 94% सहमति" in text
+    assert "💊 दवाइयां एवं सेवन विधि (भारत):" in text
+    assert "Dolo 650 (बुखार और बदन दर्द से राहत।) — 1 गोली भोजन के बाद" in text
+    assert "🚨 तुरंत आपातकालीन सहायता लें / 108 पर कॉल करें यदि:" in text
+    assert "🌿 संजीवनी-ओएस मल्टी-एजेंट द्वारा संचालित" in text
+    assert "**" not in text
+    assert "```" not in text
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_hindi_auto_detection():
+    """Test that Hindi text input automatically routes to Hindi language state."""
+    from backend.app.agents.orchestrator import orchestrate_health_request
+
+    hindi_query = "मुझे 3 दिन से बहुत तेज बुखार और खांसी है, क्या करूं?"
+    state = await orchestrate_health_request(message=hindi_query)
+    assert state.language == "hi"
+    assert state.final_response is not None
+    assert len(state.final_response) > 0
+
