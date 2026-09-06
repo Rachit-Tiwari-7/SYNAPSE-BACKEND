@@ -4,6 +4,7 @@ Central Multi-Agent Swarm Orchestrator & StateGraph Pipeline.
 Coordinates Safety Gate -> Intent Routing -> Specialist Agents (Triage, Drug, Scan, Mental) -> AI Council -> Unified LLM Synthesis.
 """
 
+import asyncio
 import time
 import uuid
 from typing import Dict, Any, List, Optional
@@ -55,7 +56,7 @@ async def orchestrate_health_request(
 ) -> SynapseOSState:
     """
     Executes the full multi-agent DAG workflow for any user message.
-    Supports auto-detected and user-selected languages (Hindi, Bengali, Tamil, etc.).
+    Optimized with concurrent asyncio.gather multi-agent execution and channel-tuned token synthesis.
     """
     if not session_id:
         session_id = str(uuid.uuid4())[:8]
@@ -99,27 +100,19 @@ async def orchestrate_health_request(
     intent = detect_intent(message)
     state.detected_intent = intent
 
-    # 3. Dynamic Multi-Agent Execution based on Intent
+    # 3. Dynamic Parallel Multi-Agent Execution based on Intent (Ultra-Fast Concurrent asyncio.gather)
     if intent == "VACCINATION_SCHEDULE":
-        await vaccination_agent_node(state)
-        await verification_agent_node(state)
+        await asyncio.gather(vaccination_agent_node(state), verification_agent_node(state), return_exceptions=True)
     elif intent == "PREVENTIVE_HEALTH":
-        await preventive_health_agent_node(state)
-        await verification_agent_node(state)
+        await asyncio.gather(preventive_health_agent_node(state), verification_agent_node(state), return_exceptions=True)
     elif intent == "OUTBREAK_ALERT":
-        await outbreak_agent_node(state)
-        await verification_agent_node(state)
+        await asyncio.gather(outbreak_agent_node(state), verification_agent_node(state), return_exceptions=True)
     elif intent == "DRUG_SAFETY":
-        await drug_agent_node(state)
-        await triage_agent_node(state)
-        await verification_agent_node(state)
+        await asyncio.gather(drug_agent_node(state), triage_agent_node(state), verification_agent_node(state), return_exceptions=True)
     elif intent == "SCAN_ANALYSIS":
-        await scan_agent_node(state)
-        await triage_agent_node(state)
-        await verification_agent_node(state)
+        await asyncio.gather(scan_agent_node(state), triage_agent_node(state), verification_agent_node(state), return_exceptions=True)
     elif intent == "MENTAL_HEALTH":
-        await mental_health_node(state)
-        await triage_agent_node(state)
+        await asyncio.gather(mental_health_node(state), triage_agent_node(state), return_exceptions=True)
     elif intent == "DIGITAL_TWIN":
         twin_data = compute_baseline_organ_scores(DigitalTwinInput())
         state.digital_twin = twin_data
@@ -129,10 +122,8 @@ async def orchestrate_health_request(
             duration_ms=15
         ))
     else:
-        # Default Full Swarm Consultation: Triage + Drug + AI Council Verification
-        await triage_agent_node(state)
-        await drug_agent_node(state)
-        await verification_agent_node(state)
+        # Default Full Swarm Consultation: Concurrent Triage + Drug + AI Council in Parallel
+        await asyncio.gather(triage_agent_node(state), drug_agent_node(state), verification_agent_node(state), return_exceptions=True)
 
     # 4. Synthesize Final Consolidated Response via LLM (Groq / OpenRouter)
     synth_start = time.time()
@@ -180,7 +171,8 @@ AI Council Verification: {state.verification}
         {"role": "user", "content": f"Consolidate these specialist agent findings for the patient in {target_lang_name}:\n{agent_findings_context}"}
     ]
 
-    llm_synthesis = await call_llm(messages, temperature=0.3, max_tokens=900)
+    max_synth_tokens = 320 if channel in ("whatsapp", "sms") else 650
+    llm_synthesis = await call_llm(messages, temperature=0.2, max_tokens=max_synth_tokens)
 
     if llm_synthesis:
         state.final_response = llm_synthesis

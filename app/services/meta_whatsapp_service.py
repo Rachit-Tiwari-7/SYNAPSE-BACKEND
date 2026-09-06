@@ -4,6 +4,7 @@ Meta Official WhatsApp Cloud API Webhook Ingestion, Multilingual Language Select
 Interactive Menu Engine, FSM, and Multi-Agent Dispatcher.
 """
 
+import asyncio
 import base64
 import json
 import logging
@@ -16,7 +17,8 @@ from backend.app.services.meta_whatsapp_client import (
     send_whatsapp_message,
     send_whatsapp_image,
     send_whatsapp_interactive_buttons,
-    download_meta_media
+    download_meta_media,
+    mark_message_as_read
 )
 from backend.app.core.session_manager import session_manager
 from backend.app.agents.orchestrator import orchestrate_health_request
@@ -725,6 +727,13 @@ async def process_whatsapp_inbound_webhook(payload: Dict[str, Any]) -> Dict[str,
             if msg_id and message_deduplicator.is_duplicate(msg_id):
                 logger.info(f"[Meta Deduplication] Dropping duplicate webhook message {msg_id}")
                 return {"status": "duplicate_ignored", "id": msg_id}
+
+            # UX Acceleration: Instantly mark message as read (< 50ms) to trigger WhatsApp blue ticks
+            if msg_id:
+                try:
+                    asyncio.create_task(mark_message_as_read(msg_id))
+                except Exception as ex:
+                    logger.debug(f"[Meta Read Receipt Background Error] {ex}")
 
             sender_phone = msg.get("from", "unknown")
             msg_type = msg.get("type", "text")

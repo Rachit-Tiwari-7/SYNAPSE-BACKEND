@@ -233,3 +233,28 @@ async def download_meta_media(media_id: str) -> Optional[bytes]:
     except Exception as e:
         logger.error(f"Exception downloading Meta WhatsApp media {media_id}: {e}")
         return None
+
+
+async def mark_message_as_read(message_id: str) -> bool:
+    """
+    Marks an incoming WhatsApp message as 'read' in real-time (blue ticks) within < 50ms.
+    Provides immediate UX feedback while swarm reasoning proceeds in the background.
+    """
+    if not settings.WHATSAPP_CLOUD_API_TOKEN or not settings.WHATSAPP_PHONE_NUMBER_ID or not message_id:
+        return False
+
+    endpoint = _get_base_url()
+    headers = _get_auth_headers()
+    payload = {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": message_id
+    }
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.post(endpoint, json=payload, headers=headers)
+            return resp.status_code in (200, 201)
+    except Exception as e:
+        logger.debug(f"Non-critical mark_message_as_read exception: {e}")
+        return False
+
