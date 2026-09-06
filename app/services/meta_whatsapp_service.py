@@ -436,76 +436,8 @@ def _extract_medications_guidance(text: str, is_emergency: bool) -> List[str]:
 
 
 async def classify_medical_image_type(image_base64: Optional[str], caption: Optional[str] = None) -> str:
-    """
-    Uses OpenRouter Vision to accurately classify incoming WhatsApp media into:
-    - 'prescription' (Handwritten/printed doctor prescription, medicine receipt, lab report)
-    - 'chest_xray' (Chest radiograph / lung scan)
-    - 'bone_fracture' (Limb, wrist, hand, leg, foot, joint orthopedic X-ray / CT)
-    Falls back gracefully to caption heuristics if OpenRouter vision is unavailable.
-    """
-    caption_lower = (caption or "").lower().strip()
-    if any(k in caption_lower for k in ["rx", "prescription", "medicine", "doctor note", "pills", "syrup", "slip", "parcha", "dawa", "report"]):
-        return "prescription"
-    if any(k in caption_lower for k in ["chest", "lung", "pneumonia", "covid", "cough", "breath", "thorax"]):
-        return "chest_xray"
-    if any(k in caption_lower for k in ["fracture", "bone", "wrist", "hand", "leg", "arm", "knee", "foot", "ankle", "joint", "ortho"]):
-        return "bone_fracture"
-
-    if not image_base64 or not settings.OPENROUTER_API_KEY:
-        return "bone_fracture"
-
-    try:
-        data_url = image_base64 if image_base64.startswith("data:") else f"data:image/jpeg;base64,{image_base64}"
-        headers = {
-            "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": settings.OPENROUTER_REFERER or "https://synapseos.health",
-            "X-Title": settings.OPENROUTER_APP_TITLE or "SynapseOS Image Classifier"
-        }
-        vision_model = settings.OPENROUTER_PRIMARY_MODEL or "google/gemini-2.0-flash-001"
-        payload = {
-            "model": vision_model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": (
-                                "Analyze this image and classify it into exactly one of three categories:\n"
-                                "1. 'prescription' if it is a doctor's prescription, medical slip, medicine bill, or lab test report.\n"
-                                "2. 'chest_xray' if it is a chest radiograph or lung X-ray.\n"
-                                "3. 'bone_fracture' if it is an orthopedic bone X-ray, fracture scan, or limb scan.\n\n"
-                                "Return JSON only in this exact format: {\"category\": \"prescription\" | \"chest_xray\" | \"bone_fracture\"}"
-                            )
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": data_url}
-                        }
-                    ]
-                }
-            ],
-            "temperature": 0.0,
-            "max_tokens": 80
-        }
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
-            if resp.status_code == 200:
-                raw_content = resp.json()["choices"][0]["message"]["content"]
-                clean_json = raw_content.replace("```json", "").replace("```", "").strip()
-                parsed = json.loads(clean_json)
-                cat = parsed.get("category", "").lower().strip()
-                if cat in ("prescription", "lab_report", "report"):
-                    return "prescription"
-                elif cat in ("chest_xray", "chest", "lung"):
-                    return "chest_xray"
-                elif cat in ("bone_fracture", "bone", "fracture", "orthopedic"):
-                    return "bone_fracture"
-    except Exception as exc:
-        logger.warning(f"[OpenRouter Vision Classifier] Fallback triggered: {exc}")
-
-    return "bone_fracture"
+    """Classifies incoming WhatsApp media as prescription or medical document."""
+    return "prescription"
 
 
 def format_compact_generic_qa_card(text: str) -> str:
@@ -755,104 +687,69 @@ async def process_whatsapp_inbound_webhook(payload: Dict[str, Any]) -> Dict[str,
     session = session_manager.get_session(sender_phone)
     user_lang = session["context"].get("lang") or detect_language_script(message_text)
 
-    # 3. Handle Medical Image Upload (FractureNet YOLOv8 / MONAI / TrOCR)
+    # 3. Handle Medical Document & Prescription Image Upload
     if msg_type == "image" or image_base64 or media_id:
         if media_id and not image_base64:
             media_bytes = await download_meta_media(media_id)
             if media_bytes:
                 image_base64 = f"data:image/jpeg;base64,{base64.b64encode(media_bytes).decode('utf-8')}"
 
-        img_type = await classify_medical_image_type(image_base64, caption=caption or message_text)
+        try:
+            from backend.app.services.prescription_ocr_service import (
+                validate_image_bytes,
+                normalize_and_resize_image,
+                run_prescription_ocr,
+                interpret_prescription,
+                format_prescription_for_whatsapp
+            )
+            if image_base64:
+                clean_b64 = image_base64.split(",")[-1] if "," in image_base64 else image_base64
+                raw_bytes = base64.b64decode(clean_b64)
+                valid, err_code, err_msg, pil_img = validate_image_bytes(raw_bytes)
+                if valid and pil_img:
+                    data_url = normalize_and_resize_image(pil_img)
+                    ok, err_obj, ocr_data = await run_prescription_ocr(data_url)
+                    if ok and ocr_data:
+                        interp = await interpret_prescription(ocr_data=ocr_data, lang=user_lang or "en")
+                        reply_text = format_prescription_for_whatsapp(ocr_data=ocr_data, interpretation=interp)
+                        dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=reply_text)
+                        return {
+                            "status": "processed",
+                            "type": "prescription_ocr_interpretation",
+                            "sender": sender_phone,
+                            "dispatch": dispatch_res,
+                            "reply_dispatched": dispatch_res,
+                            "scan_summary": interp.get("likely_condition", "Prescription Interpreted")
+                        }
+        except Exception as e:
+            logger.error(f"[WhatsApp Prescription OCR Error] {e}", exc_info=True)
 
-        if img_type == "prescription":
-            try:
-                from backend.app.services.prescription_ocr_service import (
-                    validate_image_bytes,
-                    normalize_and_resize_image,
-                    run_prescription_ocr,
-                    interpret_prescription,
-                    format_prescription_for_whatsapp
-                )
-                if image_base64:
-                    clean_b64 = image_base64.split(",")[-1] if "," in image_base64 else image_base64
-                    raw_bytes = base64.b64decode(clean_b64)
-                    valid, err_code, err_msg, pil_img = validate_image_bytes(raw_bytes)
-                    if valid and pil_img:
-                        data_url = normalize_and_resize_image(pil_img)
-                        ok, err_obj, ocr_data = await run_prescription_ocr(data_url)
-                        if ok and ocr_data:
-                            # Run downstream clinical interpretation & triage
-                            interp = await interpret_prescription(ocr_data=ocr_data, lang=user_lang or "en")
-                            reply_text = format_prescription_for_whatsapp(ocr_data=ocr_data, interpretation=interp)
-                            dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=reply_text)
-                            return {
-                                "status": "processed",
-                                "type": "prescription_ocr_interpretation",
-                                "sender": sender_phone,
-                                "dispatch": dispatch_res,
-                                "reply_dispatched": dispatch_res,
-                                "scan_summary": interp.get("likely_condition", "Prescription Interpreted")
-                            }
-            except Exception as e:
-                logger.error(f"[WhatsApp Prescription OCR/Triage Error] {e}")
-
-        scan_result = analyze_medical_image(
-            image_type=img_type,
-            filename="whatsapp_meta_scan.jpg",
-            image_base64=image_base64
-        )
-
-        boxes = scan_result.get("visual_bounding_boxes", [])
-        box_str = f"• Detections: {len(boxes)} anomaly zone(s) localized." if boxes else "• Findings: No acute displaced fracture."
-
-        reply_lines = [
-            "📷 SANJEEVNI X-RAY SCAN ANALYSIS",
+        fallback_lines = [
+            "📄 SANJEEVNI PRESCRIPTION VISION AI",
             "━━━━━━━━━━━━━━━━━━━━",
-            f"• Modality: {img_type.replace('_', ' ').title()}",
-            f"• Status: {scan_result.get('urgency_badge', 'Standard Review')}",
-            f"• AI Impression: {scan_result.get('ai_diagnosis_summary', 'Analysis Completed')}",
-            box_str,
+            "We received your medical document image.",
             "",
-            "💡 Recommended Next Step:",
-            f"{scan_result.get('recommended_clinical_action', 'Consult a registered orthopedic specialist.')}",
+            "📋 Status: Ready for Prescription Reading",
+            "Please ensure the doctor's prescription photo is clearly visible, well-lit, and unblurred.",
             "",
-            "⚠️ Preliminary AI analysis. Must be confirmed by a radiologist.",
+            "💊 What we extract:",
+            "• Transcribed doctor handwriting & medicine names",
+            "• Exact dosage & administration timing (before/after meals)",
+            "• Suspected clinical diagnosis",
+            "• Low-cost Jan Aushadhi generic equivalents",
+            "• Emergency red flag warning symptoms",
+            "",
             "━━━━━━━━━━━━━━━━━━━━",
             "🌿 Powered by Sanjeevni-OS"
         ]
-
-        reply_text = "\n".join(reply_lines)
+        reply_text = "\n".join(fallback_lines)
         dispatch_res = await send_whatsapp_message(to_phone=sender_phone, text=reply_text)
-
-        # Dispatch the actual annotated YOLOv8 JPG and Grad-CAM JPG straight into the chat bubble
-        result_img_url = scan_result.get("remote_result_image")
-        gradcam_img_url = scan_result.get("remote_gradcam_image")
-        image_dispatches = []
-
-        if result_img_url:
-            img_res = await send_whatsapp_image(
-                to_phone=sender_phone,
-                image_url=result_img_url,
-                caption="🎯 FractureNet YOLOv8: Anomaly Localization Overlay"
-            )
-            image_dispatches.append({"type": "yolo_overlay", "result": img_res})
-
-        if gradcam_img_url:
-            cam_res = await send_whatsapp_image(
-                to_phone=sender_phone,
-                image_url=gradcam_img_url,
-                caption="🔥 Grad-CAM: Neural Attention Heatmap"
-            )
-            image_dispatches.append({"type": "gradcam_heatmap", "result": cam_res})
-
         return {
             "status": "processed",
-            "type": "medical_image",
+            "type": "prescription_guidance",
             "sender": sender_phone,
             "dispatch": dispatch_res,
-            "reply_dispatched": dispatch_res,
-            "images_dispatched": image_dispatches,
-            "scan_summary": scan_result.get("ai_diagnosis_summary")
+            "reply_dispatched": dispatch_res
         }
 
     # 4. Handle Empty Text

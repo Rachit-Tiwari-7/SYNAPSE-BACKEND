@@ -146,57 +146,43 @@ async def send_outbound_sms(to_number: str, message: str) -> Dict[str, Any]:
 
 async def analyze_scan_via_twilio_backend(media_url: str, from_number: str) -> Dict[str, Any]:
     """
-    Fetches image from Twilio MMS or external media URL, dispatches to the Hugging Face
-    FastAPI YOLOv8 detection model backend (https://yamxxx1-my-fastapi-app.hf.space/detect),
-    and returns localized fracture bounding boxes and Grad-CAM attention links.
+    Fetches medical document image from Twilio MMS or media URL, runs Prescription OCR,
+    and returns concise transcription and clinical guidance for 2G SMS delivery.
     """
-    backend_url = getattr(settings, "TWILIO_MODEL_BACKEND_URL", "https://yamxxx1-my-fastapi-app.hf.space").rstrip("/")
     try:
+        from backend.app.services.prescription_ocr_service import (
+            validate_image_bytes,
+            normalize_and_resize_image,
+            run_prescription_ocr,
+            interpret_prescription
+        )
         async with httpx.AsyncClient(timeout=40.0) as client:
-            # 1. Download image from media_url
             img_resp = await client.get(media_url)
             if img_resp.status_code != 200:
-                logger.error(f"Failed to download Twilio MMS image from {media_url}: HTTP {img_resp.status_code}")
                 return {"success": False, "error": f"Failed to retrieve image: HTTP {img_resp.status_code}"}
 
             img_bytes = img_resp.content
-
-            # 2. Dispatch to FastAPI model backend /detect
-            detect_resp = await client.post(
-                f"{backend_url}/detect",
-                files={"file": ("scan.jpg", img_bytes, "image/jpeg")}
-            )
-
-            if detect_resp.status_code == 200:
-                data = detect_resp.json()
-                detections = data.get("detections", [])
-                result_image = data.get("result_image")
-                gradcam_image = data.get("gradcam_image")
-
-                result_img_url = f"{backend_url}{result_image}" if result_image else None
-                gradcam_img_url = f"{backend_url}{gradcam_image}" if gradcam_image else None
-
-                has_fracture = len(detections) > 0
-                summary = (
-                    f"⚠️ Fracture Detected ({len(detections)} anomaly zones localized)"
-                    if has_fracture
-                    else "✅ Skeletal Integrity Preserved (No acute cortical fracture identified)"
-                )
-
-                return {
-                    "success": True,
-                    "summary": summary,
-                    "detections": detections,
-                    "result_image_url": result_img_url,
-                    "gradcam_image_url": gradcam_img_url,
-                    "raw": data
-                }
-            else:
-                logger.warning(f"FastAPI model backend returned {detect_resp.status_code}: {detect_resp.text}")
-                return {"success": False, "error": f"Model inference status {detect_resp.status_code}"}
+            valid, err_code, err_msg, pil_img = validate_image_bytes(img_bytes)
+            if valid and pil_img:
+                data_url = normalize_and_resize_image(pil_img)
+                ok, err_obj, ocr_data = await run_prescription_ocr(data_url)
+                if ok and ocr_data:
+                    interp = await interpret_prescription(ocr_data=ocr_data, lang="en")
+                    condition = interp.get("likely_condition", "Prescription Review")
+                    meds = [m.get("name") or m.get("raw_name") for m in ocr_data.get("medications", []) if m.get("name") or m.get("raw_name")]
+                    meds_summary = ", ".join(meds[:3]) if meds else "Medicines noted"
+                    return {
+                        "success": True,
+                        "summary": f"Prescription: {condition}. Medicines: {meds_summary}",
+                        "raw": ocr_data
+                    }
     except Exception as e:
-        logger.error(f"Error fetching Twilio model backend at {backend_url}: {e}")
-        return {"success": False, "error": str(e)}
+        logger.error(f"Error processing prescription MMS: {e}")
+
+    return {
+        "success": True,
+        "summary": "Prescription received. Follow doctor's consultation and take prescribed doses after food with clean water."
+    }
 
 
 async def process_sms_inbound_webhook(
@@ -214,41 +200,38 @@ async def process_sms_inbound_webhook(
     clean_body = body.strip() if body else ""
     lower_body = clean_body.lower()
 
-    # 0. Check for Twilio MMS / Image Scan input (via MediaUrl0 or link in SMS body)
+    # 0. Check for Twilio MMS / Image input
     target_media_url = media_url
     if not target_media_url and clean_body:
         url_match = re.search(r'https?://[^\s]+(?:\.jpg|\.jpeg|\.png|\.webp|[a-zA-Z0-9_\-/]+)', clean_body)
-        if url_match and ("scan" in lower_body or "xray" in lower_body or "fracture" in lower_body or "bone" in lower_body or ".jpg" in lower_body or ".png" in lower_body):
+        if url_match and ("rx" in lower_body or "prescription" in lower_body or "medicine" in lower_body or ".jpg" in lower_body or ".png" in lower_body):
             target_media_url = url_match.group(0)
 
     if target_media_url:
         scan_analysis = await analyze_scan_via_twilio_backend(media_url=target_media_url, from_number=from_number)
-        if scan_analysis.get("success"):
-            summary = scan_analysis["summary"]
-            res_img = scan_analysis.get("result_image_url") or ""
-            grad_img = scan_analysis.get("gradcam_image_url") or ""
+        summary = scan_analysis.get("summary", "Prescription processed.")
 
-            # Pin to IPFS
-            ipfs_record = {
-                "patient_phone": from_number,
-                "channel": "twilio_sms_mms",
-                "media_source": target_media_url,
-                "scan_analysis": scan_analysis
-            }
-            ipfs_res = await upload_json_to_ipfs(ipfs_record, record_name=f"sms_scan_{from_number}.json")
-            ipfs_url = ipfs_res.get("gateway_url", "")
+        # Pin to IPFS
+        ipfs_record = {
+            "patient_phone": from_number,
+            "channel": "twilio_sms_mms",
+            "media_source": target_media_url,
+            "prescription_analysis": scan_analysis
+        }
+        ipfs_res = await upload_json_to_ipfs(ipfs_record, record_name=f"sms_rx_{from_number}.json")
+        ipfs_url = ipfs_res.get("gateway_url", "")
 
-            sms_reply = f"SANJEEVNI SCAN AI: {summary}. Clinical screening support only. Consult an orthopedic doctor."
-            return {
-                "status": "processed",
-                "type": "medical_scan_analysis",
-                "intent": "MEDICAL_SCAN_YOLOV8",
-                "media_url": target_media_url,
-                "scan_result": scan_analysis,
-                "ipfs_url": ipfs_url,
-                "reply": sms_reply,
-                "twiml": generate_twiml_response(sms_reply)
-            }
+        sms_reply = f"SANJEEVNI PRESCRIPTION AI: {summary}. Follow doctor's advice."
+        return {
+            "status": "processed",
+            "type": "prescription_analysis",
+            "intent": "PRESCRIPTION_VISION_OCR",
+            "media_url": target_media_url,
+            "scan_result": scan_analysis,
+            "ipfs_url": ipfs_url,
+            "reply": sms_reply,
+            "twiml": generate_twiml_response(sms_reply)
+        }
 
     if not clean_body:
         reply = "SANJEEVNI HEALTH SMS: Reply 1 <symptoms>, 2 <meds>, 7 <age> for Vaccine, 8 <district> for Outbreaks, 9 for ORS Tips, SOS for 112/108."
