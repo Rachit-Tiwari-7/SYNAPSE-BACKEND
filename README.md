@@ -98,8 +98,7 @@ backend/
 │   ├── ml/                # Diagnostics ML & 10-Year Digital Twin Trajectory
 │   ├── services/          # SMS (Twilio), Pinata IPFS, Meta WhatsApp, FHIR R4, ABDM, PDF & i18n
 │   └── main.py            # FastAPI Application entrypoint & CORS middleware
-├── tests/                 # Full 55-test suite (test_sms_and_pinata_service.py, etc.)
-├── Final.pt               # FractureNet YOLOv8 bone fracture model weights
+├── tests/                 # Full test suite (test_prescription_ocr.py, test_api_endpoints.py, etc.)
 └── requirements.txt       # Python dependencies
 ```
 
